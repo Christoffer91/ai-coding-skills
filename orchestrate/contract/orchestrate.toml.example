@@ -1,0 +1,21 @@
+# Per-repo /orchestrate config. Copy to <repo>/.ai/orchestrate.toml (gitignore
+# it if you prefer). Every key is optional; sane defaults apply when absent.
+# Full reference: skills/orchestrate/references/auto-deploy-safety.md
+
+# --- deploy authorization (the important one) --------------------------------
+# Auto-deploy stays HUMAN-GATED unless YOU (a person) set this to true.
+# An agent must never set this. Absent/false => the loop opens a reviewed,
+# green PR and STOPS for you to merge.
+deploy_authorized = false
+
+# --- deploy mechanism (only one needed; used only when authorized) -----------
+# deploy_cmd   = "npm run deploy"        # a raw command
+# deploy_skill = "your-deploy-skill"     # or a deploy skill name
+# deploy_via   = "git-merge"             # or: git-integrated host (Vercel/Netlify) — merge == deploy
+# auto_merge   = false                   # merge the PR before/for deploy
+
+# --- loop tuning -------------------------------------------------------------
+ci_gate     = true              # require `gh pr checks` green before merge/deploy
+max_iter    = 3                 # review<->fix loop cap
+sandbox     = "workspace-write" # codex exec sandbox for the implement step
+exec_effort = "medium"          # gpt-5.5 effort for implement/fix (critique + review stay higher)
