@@ -35,3 +35,16 @@ At a gate (e.g. deploy), the run emits `gate …` then blocks on `wait`. The das
 - `orchestrate-dashboard` — the server (stdlib http.server)
 - `orchestrate-status` — the status emitter / gate-answer waiter
 - `dashboard.html` — the page the server serves (served as-is; edit to restyle)
+
+## Keeping runs on track — orchestrate-watchdog
+`./orchestrate-watchdog` (run alongside the dashboard) polls the runs and, for the
+cases the driver's own auto-recovery can't reach (its whole process died, or an
+in-session run stalled), reaps any orphaned `codex` in the run's cwd and flags the
+run `needsRestart` (logged to `~/.orchestrate/watchdog.log`). It detects + reaps +
+escalates; it does NOT redispatch — use the dashboard's ↻ Restart button. Flags: `--poll 30 --grace 180 --once`.
+
+## Naming — match your Claude chat
+The card shows the run's **title**. Set it to the same name you use for the work in
+your Claude chat so the dashboard lines up with your tabs:
+- driver:     `ORCH_TITLE="CoWriter loop" orchestrate.sh cowriter`
+- in-session: `orchestrate-status start --title "CoWriter loop" …`

@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""orchestrate-watchdog — reap orphaned/hung Codex and flag runs that need a restart.
+
+Companion to the driver's built-in auto-recovery, for the cases the driver can't
+reach: a run whose whole driver process died, or an in-session run that stalled.
+It DETECTS (stalled/exited), REAPS any orphaned `codex` process still living in the
+run's cwd, and ESCALATES (marks the run `needsRestart` + logs to
+~/.orchestrate/watchdog.log). It does NOT redispatch — use the dashboard's
+Restart button or re-run the topic manually.
+
+Usage:  orchestrate-watchdog [--poll 30] [--grace 180] [--once]
+Env:    ORCH_STALE_SECS (default 75), ORCH_WATCH_POLL, ORCH_WATCH_GRACE
+No dependencies (Python 3 stdlib). Safe to run alongside the dashboard.
+"""
+import os, glob, json, time, signal, subprocess, argparse
+
+HOME = os.path.expanduser("~")
+BASE = os.path.join(HOME, ".orchestrate")
+RUNS = os.path.join(BASE, "runs")
+ANS  = os.path.join(BASE, "answers")
+LOG  = os.path.join(BASE, "watchdog.log")
+
+
+def pid_alive(pid):
+    if not pid:
+        return None
+    try:
+        os.kill(int(pid), 0); return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return None
+
+
+def codex_pids_in(cwd):
+    """PIDs of codex processes whose cwd is inside `cwd` (orphaned workers)."""
+    pids = []
+    if not cwd:
+        return pids
+    try:
+        out = subprocess.run(["lsof", "-a", "-d", "cwd", "-c", "codex", "-Fpn"],
+                             capture_output=True, text=True, timeout=6).stdout
+    except Exception:
+        return pids
+    cur = None
+    root = cwd.rstrip("/")
+    for line in out.splitlines():
+        if line.startswith("p"):
+            cur = line[1:]
+        elif line.startswith("n") and cur:
+            path = line[1:]
+            if path == root or path.startswith(root + "/"):
+                try: pids.append(int(cur))
+                except ValueError: pass
+    return pids
+
+
+def save(r):
+    with open(os.path.join(RUNS, os.path.basename(r["id"]) + ".json"), "w") as fh:
+        json.dump(r, fh, indent=2)
+
+
+def logline(msg):
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{stamp} {msg}", flush=True)
+    try:
+        with open(LOG, "a") as fh:
+            fh.write(f"{stamp} {msg}\n")
+    except Exception:
+        pass
+
+
+def sweep(grace, handled):
+    now = int(time.time())
+    for f in glob.glob(os.path.join(RUNS, "*.json")):
+        try:
+            with open(f) as fh: r = json.load(fh)
+        except Exception:
+            continue
+        status = r.get("status")
+        if status in ("done", "failed"):
+            continue
+        answered = os.path.exists(os.path.join(ANS, os.path.basename(f)))
+        if r.get("gate") and not answered:
+            continue  # waiting on a human — not a liveness concern
+        age = now - int(r.get("updatedAt", now))
+        alive = pid_alive(r.get("pid"))
+        dead = alive is False
+        stalled = age > grace
+        if not (dead or stalled):
+            continue
+        if handled.get(r["id"]) == r.get("updatedAt"):
+            continue  # already escalated this exact state
+        reaped = []
+        for pid in codex_pids_in(r.get("cwd")):
+            try:
+                os.kill(pid, signal.SIGKILL); reaped.append(pid)
+            except Exception:
+                pass
+        r["needsRestart"] = True
+        r["watchdog"] = {"at": now, "reason": "exited" if dead else "stalled", "reaped": reaped}
+        save(r)
+        handled[r["id"]] = r.get("updatedAt")
+        logline(f"{r['id']}: {'worker exited' if dead else f'stalled {age}s'}; "
+                f"reaped codex {reaped or '(none)'}; flagged needsRestart")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--poll", type=int, default=int(os.environ.get("ORCH_WATCH_POLL", "30")))
+    ap.add_argument("--grace", type=int, default=int(os.environ.get("ORCH_WATCH_GRACE",
+                    str(int(os.environ.get("ORCH_STALE_SECS", "75")) + 120))))
+    ap.add_argument("--once", action="store_true", help="one sweep then exit (for cron/testing)")
+    a = ap.parse_args()
+    os.makedirs(RUNS, exist_ok=True)
+    handled = {}
+    logline(f"watchdog up (poll={a.poll}s grace={a.grace}s once={a.once})")
+    while True:
+        try:
+            sweep(a.grace, handled)
+        except Exception as e:
+            logline(f"sweep error: {e}")
+        if a.once:
+            return
+        time.sleep(a.poll)
+
+
+if __name__ == "__main__":
+    main()

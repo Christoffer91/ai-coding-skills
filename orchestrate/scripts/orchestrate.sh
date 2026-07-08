@@ -23,6 +23,7 @@
 #   ORCH_WORKTREE=1   run in a fresh worktree off origin/<default-branch> (for dirty/behind repos)
 #   ORCH_STALL_KILL   secs of NO Codex output before a step is treated as hung + killed (default 90)
 #   ORCH_MAX_RETRY    auto-recovery retries of a hung step before escalating to a human (default 2)
+#   ORCH_TITLE        dashboard card title — set to match your Claude chat name (default: <topic>)
 #   ORCH_DRYRUN=1     print the codex/gh/git commands, execute nothing
 set -euo pipefail
 
@@ -58,7 +59,7 @@ if [[ -z "$STATUS_BIN" ]]; then
 fi
 emit(){ [[ -n "${STATUS_BIN:-}" ]] && "$STATUS_BIN" "$@" >/dev/null 2>&1 || true; }
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-emit start --id "$RUN_ID" --repo "$(basename "$ORIG_ROOT")" --topic "$TOPIC" --title "$TOPIC" --branch "$BRANCH" --pid $$ --cwd "$ORIG_ROOT" --driver "$SELF"
+emit start --id "$RUN_ID" --repo "$(basename "$ORIG_ROOT")" --topic "$TOPIC" --title "${ORCH_TITLE:-$TOPIC}" --branch "$BRANCH" --pid $$ --cwd "$ORIG_ROOT" --driver "$SELF"
 emit step --id "$RUN_ID" --n 1 --state done
 
 # --- run a Codex step with auto-recovery: kill a hung Codex + retry (capped) ---
