@@ -8,7 +8,7 @@ serves an aggregate dashboard, and accepts click-to-answer gate responses
 Usage:  orchestrate-dashboard [--port 4600]      (env: ORCH_DASH_PORT)
 Binds to 127.0.0.1 only. No dependencies (Python 3 stdlib).
 """
-import http.server, socketserver, json, os, glob, time, argparse, urllib.parse, threading
+import http.server, socketserver, json, os, glob, time, argparse, urllib.parse, threading, subprocess, signal
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
@@ -70,6 +70,45 @@ def load_runs():
     return out
 
 
+def reap(pid):
+    """Kill a run's worker process group (driver + its Codex child), best effort."""
+    if not pid:
+        return
+    try:
+        os.killpg(os.getpgid(int(pid)), signal.SIGKILL)
+    except Exception:
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except Exception:
+            pass
+
+
+def restart_or_kill(rid, kill_only=False):
+    """Reap a stalled/dead run and (unless kill_only) relaunch its driver restart-safe."""
+    if not rid:
+        return (400, json.dumps({"error": "id required"}))
+    try:
+        with open(os.path.join(RUNS, rid + ".json")) as fh:
+            r = json.load(fh)
+    except Exception:
+        return (404, json.dumps({"error": "no such run"}))
+    reap(r.get("pid"))
+    if kill_only:
+        return (200, json.dumps({"ok": True, "killed": True}))
+    cwd, topic, driver = r.get("cwd"), r.get("topic"), r.get("driver")
+    if not (cwd and topic and driver and os.path.isdir(cwd)
+            and os.path.isfile(driver) and os.path.basename(driver) == "orchestrate.sh"):
+        return (409, json.dumps({"error": "can't auto-restart this run (no recorded cwd/driver — started before restart support, or an in-session run). Re-run it from a terminal / Claude session."}))
+    os.makedirs(os.path.join(BASE, "logs"), exist_ok=True)
+    logf = open(os.path.join(BASE, "logs", rid + ".log"), "ab")
+    env = dict(os.environ); env["ORCH_RESTART"] = "1"
+    try:
+        subprocess.Popen([driver, topic], cwd=cwd, env=env, stdout=logf, stderr=logf, start_new_session=True)
+    except Exception as e:
+        return (500, json.dumps({"error": f"launch failed: {e}"}))
+    return (200, json.dumps({"ok": True, "restarted": topic}))
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         b = body if isinstance(body, bytes) else str(body).encode("utf-8")
@@ -97,19 +136,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            return self._send(400, json.dumps({"error": "bad json"}))
+        rid = os.path.basename(str(data.get("id", "")))  # sanitize: no path traversal
         if p == "/api/answer":
-            try:
-                n = int(self.headers.get("Content-Length", 0))
-                data = json.loads(self.rfile.read(n) or b"{}")
-            except Exception:
-                return self._send(400, json.dumps({"error": "bad json"}))
-            rid = os.path.basename(str(data.get("id", "")))  # sanitize: no path traversal
             if not rid:
                 return self._send(400, json.dumps({"error": "id required"}))
             os.makedirs(ANS, exist_ok=True)
             with open(os.path.join(ANS, rid + ".json"), "w") as fh:
                 json.dump({"choice": data.get("choice"), "at": int(time.time())}, fh)
             self._send(200, json.dumps({"ok": True}))
+        elif p == "/api/restart":
+            self._send(*restart_or_kill(rid))
+        elif p == "/api/kill":
+            self._send(*restart_or_kill(rid, kill_only=True))
         else:
             self._send(404, "not found", "text/plain")
 

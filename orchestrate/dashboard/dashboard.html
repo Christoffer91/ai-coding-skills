@@ -100,6 +100,10 @@
   .btn:hover{border-color:var(--await);background:var(--await-soft)} .btn:active{transform:translateY(1px)}
   .btn.primary{background:var(--await);border-color:var(--await);color:#fff} .btn.primary:hover{filter:brightness(1.06)}
   .btn:focus-visible{outline:2px solid var(--await);outline-offset:2px}
+  .actions{display:flex;gap:8px;padding:0 19px 16px}
+  .btn.sm{font-size:12.5px;font-weight:640;padding:6px 13px;border-radius:8px}
+  .btn.restart{border-color:var(--live);color:var(--live)} .btn.restart:hover{background:var(--live-soft);border-color:var(--live)}
+  .btn[disabled]{opacity:.6;cursor:default}
   .answered{font-size:14px;color:var(--muted);padding:0 19px 16px;display:flex;align-items:center;gap:8px} .answered b{color:var(--ink);font-weight:620}
   .detail{border-top:1px solid var(--border);padding:8px 19px 10px;background:var(--surface-2);display:none} .card.open .detail{display:block} .card.open .caret{transform:rotate(90deg)}
   .caret{color:var(--faint);transition:transform .15s;margin-left:auto;flex:0 0 auto;padding-top:3px;font-size:15px}
@@ -181,6 +185,10 @@ function card(r){
   if(r.gate&&!isAns(r)){gate=`<div class="gate"><div class="q">${esc(r.gate.question)}</div><div class="opts">`+
     (r.gate.options||[]).map(o=>`<button class="btn ${o.primary?'primary':''}" data-ans="${esc(r.id)}" data-choice="${esc(o.label)}">${esc(o.label)}</button>`).join("")+`</div></div>`;}
   else if(isAns(r)){gate=`<div class="answered">✓ You chose <b>${esc(ansChoice(r))}</b> — sent to the run</div>`;}
+  let actions="";
+  if((h==="stale"||h==="exited") && r.status!=="done" && !(r.gate&&!isAns(r))){
+    actions=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;
+  }
   return `<div class="card ${cls} ${open[r.id]?'open':''}" data-id="${esc(r.id)}">
     <div class="head" data-toggle="${esc(r.id)}">
       <div style="min-width:0"><div class="repo">${esc(r.repo)} · ${esc(r.branch)}</div><div class="title">${esc(r.title)}</div></div>
@@ -194,7 +202,7 @@ function card(r){
       <div class="cell"><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div></div>
     <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.5")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
       ${r.pr?`<a class="pr" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">${prTxt} ↗</a>`:`<span class="chip">${prTxt}</span>`}</div>
-    ${gate}${detail(r)}</div>`;
+    ${gate}${actions}${detail(r)}</div>`;
 }
 function render(){
   const needs=RUNS.filter(r=>r.gate&&!isAns(r)), rest=RUNS.filter(r=>!(r.gate&&!isAns(r)));
@@ -218,6 +226,12 @@ document.addEventListener("click",async e=>{
   if(ans){e.stopPropagation();const id=ans.dataset.ans,choice=ans.dataset.choice;localAnswered[id]=choice;render();
     try{await fetch("/api/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,choice})});}catch(_){}
     load();return;}
+  const rst=e.target.closest("[data-restart]");
+  if(rst){e.stopPropagation();const id=rst.dataset.restart;rst.textContent="↻ restarting…";rst.disabled=true;
+    try{const res=await fetch("/api/restart",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
+      if(!res.ok){const j=await res.json().catch(()=>({}));rst.textContent="✕ can't restart";rst.title=j.error||"";}}
+    catch(_){rst.textContent="✕ failed";}
+    setTimeout(load,1200);return;}
   const tog=e.target.closest("[data-toggle]"); if(tog){open[tog.dataset.toggle]=!open[tog.dataset.toggle];render();}
 });
 async function load(){

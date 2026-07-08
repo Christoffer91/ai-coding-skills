@@ -57,7 +57,8 @@ if [[ -z "$STATUS_BIN" ]]; then
   done
 fi
 emit(){ [[ -n "${STATUS_BIN:-}" ]] && "$STATUS_BIN" "$@" >/dev/null 2>&1 || true; }
-emit start --id "$RUN_ID" --repo "$(basename "$ORIG_ROOT")" --topic "$TOPIC" --title "$TOPIC" --branch "$BRANCH" --pid $$
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+emit start --id "$RUN_ID" --repo "$(basename "$ORIG_ROOT")" --topic "$TOPIC" --title "$TOPIC" --branch "$BRANCH" --pid $$ --cwd "$ORIG_ROOT" --driver "$SELF"
 emit step --id "$RUN_ID" --n 1 --state done
 
 # --- run a Codex step with auto-recovery: kill a hung Codex + retry (capped) ---
@@ -107,7 +108,7 @@ if [[ "$WORKTREE" == "1" ]]; then
   PLAN="$(basename "$PLAN")"
   MADE_BRANCH=1
 else
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  if [[ "${ORCH_RESTART:-0}" != "1" ]] && { ! git diff --quiet || ! git diff --cached --quiet; }; then
     die "working tree dirty — commit/stash first, or set ORCH_WORKTREE=1 to run in a clean worktree off origin/$BASE"
   fi
   MADE_BRANCH=0
@@ -130,7 +131,11 @@ codex_run "$CPROMPT" "$CRIT" "read-only" "" 2 || die "critique step failed (see 
 emit step --id "$RUN_ID" --n 2 --state done
 echo "-- [3/4] Codex implements on $BRANCH (sandbox=$SANDBOX, effort=$EXEC_EFFORT, no network)"
 emit step --id "$RUN_ID" --n 3 --state active
-[[ "$MADE_BRANCH" == "1" ]] || run "git switch -c '$BRANCH'"
+if [[ "$MADE_BRANCH" != "1" ]]; then
+  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    run "git switch '$BRANCH'"; [[ "${ORCH_RESTART:-0}" == "1" ]] && run "git reset --hard -q"   # restart: reuse branch, discard partial work
+  else run "git switch -c '$BRANCH'"; fi
+fi
 BEFORE="$(git rev-parse HEAD 2>/dev/null || echo '')"
 IMPL="$(mktemp -t orch-impl-XXXX).md"
 IPROMPT="$(mktemp -t orch-iprompt-XXXX).md"
