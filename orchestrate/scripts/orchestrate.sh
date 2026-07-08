@@ -44,6 +44,20 @@ gh auth status >/dev/null 2>&1 || die "gh not authenticated (gh auth login)"
 PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
 ORIG_ROOT="$(git rev-parse --show-toplevel)"
 
+# --- optional live status for the dashboard (no-ops if orchestrate-status absent) ---
+RUN_ID="$(basename "$ORIG_ROOT")-$TOPIC"
+STATUS_BIN="$(command -v orchestrate-status 2>/dev/null || true)"
+if [[ -z "$STATUS_BIN" ]]; then
+  for c in "$(dirname "$0")/../dashboard/orchestrate-status" \
+           "$(dirname "$0")/../skills/claude/skills/orchestrate/dashboard/orchestrate-status" \
+           "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status"; do
+    [[ -x "$c" ]] && { STATUS_BIN="$c"; break; }
+  done
+fi
+emit(){ [[ -n "${STATUS_BIN:-}" ]] && "$STATUS_BIN" "$@" >/dev/null 2>&1 || true; }
+emit start --id "$RUN_ID" --repo "$(basename "$ORIG_ROOT")" --topic "$TOPIC" --title "$TOPIC" --branch "$BRANCH"
+emit step --id "$RUN_ID" --n 1 --state done
+
 # --- detect the repo's default branch (don't assume main) --------------------
 git fetch origin -q 2>/dev/null || true
 BASE="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
@@ -70,6 +84,7 @@ echo "   plan=$PLAN  branch=$BRANCH  base=$BASE  sandbox=$SANDBOX  effort=$EXEC_
 
 # --- step 2: critique the plan (read-only, config default effort) -------------
 echo "-- [2/4] Codex critiques the plan (read-only)"
+emit step --id "$RUN_ID" --n 2 --state active
 CRIT="$(mktemp -t orch-critique-XXXX).md"
 CPROMPT="$(mktemp -t orch-cprompt-XXXX).md"
 { printf 'You are an elite engineer. Critique this plan for a change in %s: risks, wrong assumptions, missing edge cases, simpler approaches, and anything that would make a reviewer reject the PR. Be specific and terse. Plan follows:\n\n' "$(pwd)"
@@ -78,7 +93,9 @@ run "codex exec -s read-only -o '$CRIT' - < '$CPROMPT'" || die "critique step fa
 [[ "$DRY" == "1" ]] || echo "   critique -> $CRIT"
 
 # --- step 3: branch + implement (sandboxed, NO network: commit only) ---------
+emit step --id "$RUN_ID" --n 2 --state done
 echo "-- [3/4] Codex implements on $BRANCH (sandbox=$SANDBOX, effort=$EXEC_EFFORT, no network)"
+emit step --id "$RUN_ID" --n 3 --state active
 [[ "$MADE_BRANCH" == "1" ]] || run "git switch -c '$BRANCH'"
 BEFORE="$(git rev-parse HEAD 2>/dev/null || echo '')"
 IMPL="$(mktemp -t orch-impl-XXXX).md"
@@ -87,7 +104,9 @@ printf 'Implement the plan in %s on the current branch (%s). Consider the critiq
 run "codex exec -s '$SANDBOX' -c approval_policy=never -c model_reasoning_effort=$EXEC_EFFORT -o '$IMPL' - < '$IPROMPT'" || die "implement step failed"
 
 # --- step 4: push branch + open PR (driver, outside sandbox = has network) ----
+emit step --id "$RUN_ID" --n 3 --state done
 echo "-- [4/4] push branch + open PR (base: $BASE)"
+emit step --id "$RUN_ID" --n 4 --state active
 if [[ "$DRY" == "1" ]]; then
   echo "+ git push -u origin '$BRANCH'  &&  gh pr create --base '$BASE' --head '$BRANCH' --fill"
   exit 0
@@ -98,6 +117,9 @@ run "git push -u origin '$BRANCH'" || die "git push failed"
 gh pr view "$BRANCH" >/dev/null 2>&1 || gh pr create --base "$BASE" --head "$BRANCH" --fill >/dev/null || die "gh pr create failed"
 PR_NUM="$(gh pr view "$BRANCH" --json number -q .number)"
 PR_URL="$(gh pr view "$BRANCH" --json url -q .url)"
+emit pr --id "$RUN_ID" --number "$PR_NUM" --url "$PR_URL"
+emit step --id "$RUN_ID" --n 4 --state done
+emit step --id "$RUN_ID" --n 5 --state active
 
 # --- hand review back to Claude (baton written in the original repo) -----
 BATON="$ORIG_ROOT/HANDOFF-CLAUDE-review-${TOPIC}.md"

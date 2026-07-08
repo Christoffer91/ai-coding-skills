@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""orchestrate-status — emit a run's live status for the dashboard.
+
+Writes ~/.orchestrate/runs/<id>.json. Call it from the /orchestrate skill or the
+driver at each step. No dependencies (Python 3 stdlib).
+
+  orchestrate-status start  --id ID --repo R --topic T --title "…" --branch B \
+                            [--planner "Opus 4.8"] [--executor "gpt-5.5 · medium"] [--mode supervised]
+  orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"]
+  orchestrate-status pr     --id ID --number N --url U [--state OPEN]
+  orchestrate-status metric --id ID --key tests --value "12/12"
+  orchestrate-status gate   --id ID --question "…" --option "Merge & deploy:primary" --option "Leave PR open" [--kind deploy]
+  orchestrate-status wait   --id ID [--timeout 0] [--interval 3]   # blocks until answered; prints choice; clears gate
+  orchestrate-status done   --id ID [--status done|failed]
+  orchestrate-status rm     --id ID
+"""
+import argparse, json, os, sys, time
+
+HOME = os.path.expanduser("~")
+BASE = os.path.join(HOME, ".orchestrate")
+RUNS = os.path.join(BASE, "runs")
+ANS  = os.path.join(BASE, "answers")
+STEP_NAMES = ["Plan", "Critique plan", "Implement", "Open PR", "Review PR", "Apply edits", "Deploy"]
+STEP_ACTORS = ["Claude", "gpt-5.5", "gpt-5.5·med", "driver", "Claude", "gpt-5.5·med", "gated"]
+
+def path(rid):
+    rid = os.path.basename(rid)
+    return os.path.join(RUNS, rid + ".json")
+
+def load(rid):
+    try:
+        with open(path(rid)) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+def save(r):
+    os.makedirs(RUNS, exist_ok=True)
+    r["updatedAt"] = int(time.time())
+    with open(path(r["id"]), "w") as fh:
+        json.dump(r, fh, indent=2)
+
+def need(rid):
+    r = load(rid)
+    if r is None:
+        sys.exit(f"orchestrate-status: no run '{rid}' (run `start` first)")
+    return r
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    def common(p): p.add_argument("--id", required=True)
+
+    p = sub.add_parser("start"); common(p)
+    for f in ("repo", "topic", "title", "branch"): p.add_argument("--" + f, required=True)
+    p.add_argument("--planner", default="Claude"); p.add_argument("--executor", default="gpt-5.5 · medium")
+    p.add_argument("--mode", default="hands-off")
+
+    p = sub.add_parser("step"); common(p)
+    p.add_argument("--n", type=int, required=True); p.add_argument("--state", required=True)
+    p.add_argument("--note", default=None); p.add_argument("--actor", default=None)
+
+    p = sub.add_parser("pr"); common(p)
+    p.add_argument("--number", required=True); p.add_argument("--url", required=True); p.add_argument("--state", default="OPEN")
+
+    p = sub.add_parser("metric"); common(p); p.add_argument("--key", required=True); p.add_argument("--value", required=True)
+
+    p = sub.add_parser("gate"); common(p)
+    p.add_argument("--question", required=True); p.add_argument("--kind", default="gate")
+    p.add_argument("--option", action="append", default=[], required=True)
+
+    p = sub.add_parser("wait"); common(p)
+    p.add_argument("--timeout", type=int, default=0); p.add_argument("--interval", type=float, default=3.0)
+
+    p = sub.add_parser("done"); common(p); p.add_argument("--status", default="done")
+    p = sub.add_parser("rm"); common(p)
+
+    a = ap.parse_args()
+
+    if a.cmd == "start":
+        steps = [{"n": i + 1, "name": STEP_NAMES[i], "actor": STEP_ACTORS[i],
+                  "state": "active" if i == 0 else "pending"} for i in range(7)]
+        save({"id": os.path.basename(a.id), "repo": a.repo, "topic": a.topic, "title": a.title,
+              "branch": a.branch, "planner": a.planner, "executor": a.executor, "mode": a.mode,
+              "startedAt": int(time.time()), "step": 1, "status": "running",
+              "pr": None, "metrics": {}, "gate": None, "steps": steps})
+
+    elif a.cmd == "step":
+        r = need(a.id); i = a.n - 1
+        if not (0 <= i < 7): sys.exit("--n must be 1..7")
+        r["steps"][i]["state"] = a.state
+        if a.note is not None: r["steps"][i]["note"] = a.note
+        if a.actor: r["steps"][i]["actor"] = a.actor
+        r["step"] = a.n
+        if r.get("status") not in ("await", "done", "failed"):
+            r["status"] = "review" if (a.n == 6 and a.state == "active") else \
+                          "fail" if a.state == "fail" else "running"
+        save(r)
+
+    elif a.cmd == "pr":
+        r = need(a.id); r["pr"] = {"number": a.number, "url": a.url, "state": a.state}; save(r)
+
+    elif a.cmd == "metric":
+        r = need(a.id); r.setdefault("metrics", {})[a.key] = a.value; save(r)
+
+    elif a.cmd == "gate":
+        r = need(a.id)
+        opts = []
+        for o in a.option:
+            lbl, _, tag = o.partition(":")
+            opts.append({"label": lbl, "primary": tag.strip() == "primary"})
+        r["gate"] = {"kind": a.kind, "question": a.question, "options": opts}
+        r["status"] = "await"
+        # clear any stale answer so this gate waits fresh
+        af = os.path.join(ANS, os.path.basename(a.id) + ".json")
+        if os.path.exists(af):
+            try: os.remove(af)
+            except OSError: pass
+        save(r)
+
+    elif a.cmd == "wait":
+        af = os.path.join(ANS, os.path.basename(a.id) + ".json")
+        deadline = time.time() + a.timeout if a.timeout > 0 else None
+        while True:
+            if os.path.exists(af):
+                try:
+                    with open(af) as fh: ans = json.load(fh)
+                except Exception:
+                    ans = {}
+                choice = ans.get("choice", "")
+                r = load(a.id)
+                if r:
+                    r["gate"] = None
+                    if r.get("status") == "await": r["status"] = "running"
+                    save(r)
+                try: os.remove(af)  # consume
+                except OSError: pass
+                print(choice)  # caller reads the choice from stdout
+                return
+            if deadline and time.time() > deadline:
+                sys.exit(2)  # timed out, not answered
+            time.sleep(a.interval)
+
+    elif a.cmd == "done":
+        r = need(a.id)
+        r["steps"][6]["state"] = "done" if a.status == "done" else "fail"
+        r["step"] = 7; r["status"] = a.status; r["gate"] = None; save(r)
+
+    elif a.cmd == "rm":
+        for d in (RUNS, ANS):
+            f = os.path.join(d, os.path.basename(a.id) + ".json")
+            if os.path.exists(f): os.remove(f)
+
+if __name__ == "__main__":
+    main()
