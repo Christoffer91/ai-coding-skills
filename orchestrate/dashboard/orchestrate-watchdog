@@ -116,8 +116,11 @@ def main():
     a = ap.parse_args()
     os.makedirs(RUNS, exist_ok=True)
     handled = {}
+    ppid0 = os.getppid()  # exit when our launcher (e.g. Claude Desktop) goes away
     logline(f"watchdog up (poll={a.poll}s grace={a.grace}s once={a.once})")
     while True:
+        if not a.once and ppid0 != 1 and os.getppid() != ppid0:
+            logline("launching process exited — watchdog stopping"); return
         try:
             sweep(a.grace, handled)
         except Exception as e:
