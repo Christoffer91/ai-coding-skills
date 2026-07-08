@@ -71,6 +71,9 @@
   .activity{display:flex;align-items:baseline;gap:9px;padding:0 19px 14px;font-size:14px;color:var(--muted);line-height:1.4}
   .who{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px;flex:0 0 auto;letter-spacing:.02em}
   .who.claude{background:var(--claude-soft);color:var(--claude)} .who.codex{background:var(--codex-soft);color:var(--codex)} .who.neutral{background:var(--surface-2);color:var(--muted)}
+  .hb{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
+  .hb.live{background:var(--codex-soft);color:var(--codex)} .hb.live .d{width:7px;height:7px;border-radius:50%;background:var(--codex);animation:pulse 2s infinite}
+  .hb.stale{background:var(--await-soft);color:var(--await)} .hb.exited{background:var(--fail-soft);color:var(--fail)}
   .activity .act b{color:var(--ink);font-weight:660} .activity .act{min-width:0}
   .meta{display:flex;gap:24px;padding:0 19px 15px;flex-wrap:wrap}
   .meta .cell .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:18px;font-weight:640;margin-top:2px}
@@ -132,6 +135,13 @@ function ago(sec){const s=Math.max(0,Math.round(Date.now()/1000-sec));if(s<60)re
 function dur(sec){const m=Math.max(0,Math.round((Date.now()/1000-sec)/60));if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const curStep=r=>(r.steps||[]).find(s=>s.state==="active")||(r.steps||[]).slice().reverse().find(s=>s.state==="done")||(r.steps||[])[0];
+function hb(r){const h=r.health;if(!h||h==="done"||h==="waiting")return"";
+  const age=r.staleSecs!=null?r.staleSecs:Math.max(0,Math.round(Date.now()/1000-(r.updatedAt||0)));
+  const a=age<60?age+"s":age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
+  if(h==="live")return `<span class="hb live"><span class="d"></span>live</span>`;
+  if(h==="stale")return `<span class="hb stale" title="no update for ${a}">⚠ stalled · ${a}</span>`;
+  if(h==="exited")return `<span class="hb exited" title="worker process is gone">■ exited</span>`;
+  return"";}
 
 function stepper(r){let h='<div class="stepper">';(r.steps||[]).forEach((s,i)=>{
   const st=s.state==="done"?"done":s.state==="active"?"active":s.state==="fail"?"fail":"";
@@ -151,9 +161,10 @@ function card(r){
   else pill=`<span class="pill ${ck}">${whoLabel(ck)} ${r.status==="review"?"· fixing":"working"}</span>`;
   const m=r.metrics||{}, prTxt=r.pr?`#${r.pr.number} ${String(r.pr.state||"").toLowerCase()}`:"no PR yet";
   let activity="";
-  if(cur && r.status!=="done"){
-    activity=`<div class="activity"><span class="who ${ck}">${whoLabel(ck)}</span>
-      <span class="act"><b>${esc(cur.name)}</b>${cur.note?` — ${esc(cur.note)}`:""}</span></div>`;
+  if(r.status!=="done" && !(r.gate&&!isAns(r))){
+    const badge=hb(r);
+    const cs=cur?`<span class="who ${ck}">${whoLabel(ck)}</span><span class="act"><b>${esc(cur.name)}</b>${cur.note?` — ${esc(cur.note)}`:""}</span>`:"";
+    if(badge||cs) activity=`<div class="activity">${badge}${cs}</div>`;
   }
   let gate="";
   if(r.gate&&!isAns(r)){gate=`<div class="gate"><div class="q">${esc(r.gate.question)}</div><div class="opts">`+

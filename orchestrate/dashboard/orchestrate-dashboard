@@ -16,10 +16,27 @@ RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
 HERE = os.path.dirname(os.path.abspath(__file__))
 HTML = os.path.join(HERE, "dashboard.html")
+STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "90"))  # no update for this long => "stalled?"
+
+
+def pid_alive(pid):
+    """True=running, False=gone, None=unknown/not-tracked."""
+    if not pid:
+        return None
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # exists, just not ours to signal
+    except Exception:
+        return None
 
 
 def load_runs():
     out = []
+    now = int(time.time())
     for f in sorted(glob.glob(os.path.join(RUNS, "*.json"))):
         try:
             with open(f) as fh:
@@ -33,6 +50,22 @@ def load_runs():
                     r["answered"] = json.load(fh)
             except Exception:
                 pass
+        # --- liveness: is this run actually still running? ---
+        age = now - int(r.get("updatedAt", now))
+        r["staleSecs"] = age
+        alive = pid_alive(r.get("pid"))
+        r["pidAlive"] = alive
+        status = r.get("status")
+        if status in ("done", "failed"):
+            r["health"] = "done"
+        elif r.get("gate") and not r.get("answered"):
+            r["health"] = "waiting"       # blocked on you, not a liveness concern
+        elif alive is False:
+            r["health"] = "exited"        # the worker process is gone
+        elif age > STALE_SECS:
+            r["health"] = "stale"         # no update in a while — long step or a hang
+        else:
+            r["health"] = "live"          # updated recently / worker alive
         out.append(r)
     return out
 

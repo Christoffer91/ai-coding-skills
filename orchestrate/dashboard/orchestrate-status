@@ -54,11 +54,11 @@ def main():
     p = sub.add_parser("start"); common(p)
     for f in ("repo", "topic", "title", "branch"): p.add_argument("--" + f, required=True)
     p.add_argument("--planner", default="Claude"); p.add_argument("--executor", default="gpt-5.5 · medium")
-    p.add_argument("--mode", default="hands-off")
+    p.add_argument("--mode", default="hands-off"); p.add_argument("--pid", type=int, default=None)
 
     p = sub.add_parser("step"); common(p)
     p.add_argument("--n", type=int, required=True); p.add_argument("--state", required=True)
-    p.add_argument("--note", default=None); p.add_argument("--actor", default=None)
+    p.add_argument("--note", default=None); p.add_argument("--actor", default=None); p.add_argument("--pid", type=int, default=None)
 
     p = sub.add_parser("pr"); common(p)
     p.add_argument("--number", required=True); p.add_argument("--url", required=True); p.add_argument("--state", default="OPEN")
@@ -74,6 +74,7 @@ def main():
 
     p = sub.add_parser("done"); common(p); p.add_argument("--status", default="done")
     p = sub.add_parser("rm"); common(p)
+    p = sub.add_parser("heartbeat"); common(p); p.add_argument("--pid", type=int, default=None)
 
     a = ap.parse_args()
 
@@ -82,7 +83,7 @@ def main():
                   "state": "active" if i == 0 else "pending"} for i in range(7)]
         save({"id": os.path.basename(a.id), "repo": a.repo, "topic": a.topic, "title": a.title,
               "branch": a.branch, "planner": a.planner, "executor": a.executor, "mode": a.mode,
-              "startedAt": int(time.time()), "step": 1, "status": "running",
+              "startedAt": int(time.time()), "step": 1, "status": "running", "pid": a.pid,
               "pr": None, "metrics": {}, "gate": None, "steps": steps})
 
     elif a.cmd == "step":
@@ -92,6 +93,7 @@ def main():
         if a.note is not None: r["steps"][i]["note"] = a.note
         if a.actor: r["steps"][i]["actor"] = a.actor
         r["step"] = a.n
+        if a.pid: r["pid"] = a.pid
         if r.get("status") not in ("await", "done", "failed"):
             r["status"] = "review" if (a.n == 6 and a.state == "active") else \
                           "fail" if a.state == "fail" else "running"
@@ -145,6 +147,11 @@ def main():
         r = need(a.id)
         r["steps"][6]["state"] = "done" if a.status == "done" else "fail"
         r["step"] = 7; r["status"] = a.status; r["gate"] = None; save(r)
+
+    elif a.cmd == "heartbeat":
+        r = need(a.id)
+        if a.pid: r["pid"] = a.pid
+        save(r)  # bumps updatedAt to signal liveness
 
     elif a.cmd == "rm":
         for d in (RUNS, ANS):

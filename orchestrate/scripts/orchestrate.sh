@@ -55,7 +55,7 @@ if [[ -z "$STATUS_BIN" ]]; then
   done
 fi
 emit(){ [[ -n "${STATUS_BIN:-}" ]] && "$STATUS_BIN" "$@" >/dev/null 2>&1 || true; }
-emit start --id "$RUN_ID" --repo "$(basename "$ORIG_ROOT")" --topic "$TOPIC" --title "$TOPIC" --branch "$BRANCH"
+emit start --id "$RUN_ID" --repo "$(basename "$ORIG_ROOT")" --topic "$TOPIC" --title "$TOPIC" --branch "$BRANCH" --pid $$
 emit step --id "$RUN_ID" --n 1 --state done
 
 # --- detect the repo's default branch (don't assume main) --------------------
@@ -101,7 +101,17 @@ BEFORE="$(git rev-parse HEAD 2>/dev/null || echo '')"
 IMPL="$(mktemp -t orch-impl-XXXX).md"
 IPROMPT="$(mktemp -t orch-iprompt-XXXX).md"
 printf 'Implement the plan in %s on the current branch (%s). Consider the critique at %s. Run the project'"'"'s tests/lint/build until green. Then stage and git commit with a clear message. Do NOT push and do NOT open a PR — the sandbox has no network; the driver handles that. Summarize what you changed on the last line.\n' "$PLAN" "$BRANCH" "$CRIT" > "$IPROMPT"
-run "codex exec -s '$SANDBOX' -c approval_policy=never -c model_reasoning_effort=$EXEC_EFFORT -o '$IMPL' - < '$IPROMPT'" || die "implement step failed"
+if [[ "$DRY" == "1" ]]; then
+  echo "+ codex exec -s $SANDBOX -c approval_policy=never -c model_reasoning_effort=$EXEC_EFFORT -o $IMPL - < $IPROMPT   (+progress heartbeat)"
+else
+  ILOG="$(mktemp -t orch-ilog-XXXX).log"
+  # Progress heartbeat: keep the run "live" only while Codex output grows; if it
+  # hangs (log frozen) heartbeats stop and the dashboard flips it to "stalled".
+  ( last=-1; while :; do sz=$(wc -c <"$ILOG" 2>/dev/null || echo 0); [[ "$sz" != "$last" ]] && { emit heartbeat --id "$RUN_ID" --pid $$; last="$sz"; }; sleep 15; done ) & HBPID=$!
+  codex exec -s "$SANDBOX" -c approval_policy=never -c model_reasoning_effort="$EXEC_EFFORT" -o "$IMPL" - < "$IPROMPT" >"$ILOG" 2>&1; rc=$?
+  kill "$HBPID" 2>/dev/null || true
+  [[ $rc -eq 0 ]] || { echo "  codex log tail:"; tail -n 3 "$ILOG" 2>/dev/null; die "implement step failed (log: $ILOG)"; }
+fi
 
 # --- step 4: push branch + open PR (driver, outside sandbox = has network) ----
 emit step --id "$RUN_ID" --n 3 --state done
