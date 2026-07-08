@@ -8,7 +8,7 @@ serves an aggregate dashboard, and accepts click-to-answer gate responses
 Usage:  orchestrate-dashboard [--port 4600]      (env: ORCH_DASH_PORT)
 Binds to 127.0.0.1 only. No dependencies (Python 3 stdlib).
 """
-import http.server, socketserver, json, os, glob, time, argparse, urllib.parse
+import http.server, socketserver, json, os, glob, time, argparse, urllib.parse, threading
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
@@ -87,7 +87,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=int(os.environ.get("ORCH_DASH_PORT", "4600")))
+    ap.add_argument("--no-exit-with-parent", action="store_true",
+                    help="keep running even after the launching process (e.g. Claude Desktop) exits")
     args = ap.parse_args()
+    # Self-terminate when our parent process goes away (e.g. Claude Desktop closes),
+    # unless we were started already-detached (ppid==1) or told to stay up.
+    ppid0 = os.getppid()
+    if not args.no_exit_with_parent and ppid0 != 1:
+        def _watch_parent():
+            while True:
+                time.sleep(3)
+                if os.getppid() != ppid0:
+                    os._exit(0)
+        threading.Thread(target=_watch_parent, daemon=True).start()
     os.makedirs(RUNS, exist_ok=True)
     os.makedirs(ANS, exist_ok=True)
     socketserver.TCPServer.allow_reuse_address = True

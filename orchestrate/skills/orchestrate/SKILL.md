@@ -90,6 +90,19 @@ See `references/auto-deploy-safety.md`. Auto-deploy ONLY if **all** hold: the re
 - Post review (blocking/notable/nit). Blocking → hand back to Codex. Clean + low-risk + CI green → deploy gate.
 ```
 
+## Live status (dashboard)
+Emit status so this run shows on the shared dashboard — **`orchestrate-dashboard`** (→ http://localhost:4600) is one page for every run on this machine, with **click-to-answer gates**. The `orchestrate.sh` driver emits automatically; when driving **in-session**, call the emitter at each step (no-op if not installed):
+```bash
+ID="$(basename "$PWD")-<topic>"
+orchestrate-status start --id "$ID" --repo <repo> --topic <topic> --title "<title>" --branch orch/<topic>
+orchestrate-status step  --id "$ID" --n <1-7> --state active|done      # at each step
+orchestrate-status pr    --id "$ID" --number <n> --url <url>           # after step 4
+orchestrate-status gate  --id "$ID" --question "Deploy?" --option "Merge & deploy:primary" --option "Leave PR open"
+choice=$(orchestrate-status wait --id "$ID" --timeout 0)               # blocks until you click in the dashboard
+orchestrate-status done  --id "$ID"
+```
+For a gated decision, emit `gate` then `wait` — you answer from the dashboard's **Needs you** section. See `dashboard/README.md`.
+
 ## Guardrails
 - Branch-per-task; PR always; never direct-push or force-push `main`.
 - Default sandbox `workspace-write` (not `danger-full-access`) unless in a disposable worktree.
