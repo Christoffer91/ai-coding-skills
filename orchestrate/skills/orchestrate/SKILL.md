@@ -31,7 +31,7 @@ Produce a concrete spec at `PLAN-<topic>.md`. Track loop state (step, branch, PR
 ### 2 — Critique the plan (Codex / gpt-5.5)
 ```bash
 codex exec -s read-only -o /tmp/orch-critique.md \
-  "You are an elite engineer. Critique this plan for a change in $(pwd): risks, wrong assumptions, missing edge cases, simpler approaches, and anything that would make a reviewer reject the PR. Be specific and terse. Plan:\n\n$(cat PLAN-<topic>.md)"
+  "You are an elite engineer. Critique this plan for a change in $(pwd): risks, wrong assumptions, missing edge cases, simpler approaches, and anything that would make a reviewer reject the PR. Be specific and terse. Plan:\n\n$(cat PLAN-<topic>.md)" < /dev/null
 ```
 Read it. Hands-off: fold in valid points, revise the plan, proceed. Supervised: show critique + revisions, wait.
 
@@ -40,9 +40,9 @@ Create the task branch, write a handoff (format below), then implement:
 ```bash
 git switch -c orch/<topic>
 codex exec -s workspace-write -c approval_policy=never -c model_reasoning_effort=medium -o /tmp/orch-impl.md \
-  "Read HANDOFF-CODEX-<topic>.md and PLAN-<topic>.md. Implement on the current branch (orch/<topic>). Run the project's tests/lint/build until green. Then git commit with a clear message. Do NOT push or open a PR (the sandbox has no network)."
+  "Read HANDOFF-CODEX-<topic>.md and PLAN-<topic>.md. Implement on the current branch (orch/<topic>). Run the project's tests/lint/build until green. Then git commit with a clear message. Do NOT push or open a PR (the sandbox has no network)." < /dev/null
 ```
-Notes: `codex exec` has **no `-a` flag** — set approvals via `-c approval_policy=never`. `workspace-write` **blocks network**, so Codex commits locally and *you/the driver* push + PR. Execution is mechanical → `medium` effort; keep critique/review at the config default (`xhigh`). Reserve `--dangerously-bypass-approvals-and-sandbox` for throwaway worktrees only.
+Notes: `codex exec` has **no `-a` flag** — set approvals via `-c approval_policy=never`. `workspace-write` **blocks network**, so Codex commits locally and *you/the driver* push + PR. Execution is mechanical → `medium` effort; keep critique/review at the config default (`xhigh`). Reserve `--dangerously-bypass-approvals-and-sandbox` for throwaway worktrees only. **Always redirect codex's stdin** (`</dev/null`, or `- < prompt.md` for long prompts): `codex exec` reads stdin even with an arg prompt, so a backgrounded/piped launch hangs forever on *"Reading additional input from stdin…"* — see `references/loop-mechanics.md`.
 
 ### 4 — Open the PR (Claude / driver)
 ```bash
@@ -57,9 +57,10 @@ gh pr diff <n> > /tmp/orch-pr.diff
 Review the diff for correctness, security, contract, and taste — this is Claude's judgment pass. Optional independent lens: `codex review --base main`. Categorize findings blocking / notable / nit. No blocking → step 7. Blocking → step 6.
 
 ### 6 — Apply review edits (Codex / gpt-5.5)
+Resume the **specific** implement session — Codex prints `session id: <uuid>` in step 3; capture it. Not `resume --last`: with several Codex runs going at once, `--last` can hijack a concurrent session and fix the wrong work.
 ```bash
-codex exec resume --last -c model_reasoning_effort=medium -o /tmp/orch-fix.md \
-  "Address this PR review and git commit the fixes on this branch (do not push). Review:\n<blocking + notable findings>"
+codex exec resume <session-id-from-step-3> -c model_reasoning_effort=medium -o /tmp/orch-fix.md \
+  "Address this PR review and git commit the fixes on this branch (do not push). Review:\n<blocking + notable findings>" < /dev/null
 git push   # push the new commits to the PR
 ```
 Increment the iteration count. **Cap at `max_iter` (default 3):** if still blocking after the cap, stop and escalate to the human. Otherwise loop back to step 5.
