@@ -16,7 +16,7 @@ RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
 HERE = os.path.dirname(os.path.abspath(__file__))
 HTML = os.path.join(HERE, "dashboard.html")
-STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "90"))  # no update for this long => "stalled?"
+STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "75"))  # no update for this long => "stalled?"
 
 
 def pid_alive(pid):

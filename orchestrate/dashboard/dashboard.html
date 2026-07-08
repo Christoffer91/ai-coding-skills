@@ -16,18 +16,21 @@
     --ink:#E9EBF0; --muted:#9BA1AE; --faint:#6B7280; --border:#282C35; --border-strong:#3A404C;
     --claude:#E2A084; --claude-soft:#33231B; --codex:#41BE96; --codex-soft:#12281F;
     --done:#8B93A2; --done-soft:#20242C; --await:#E3A94A; --await-soft:#2A2214; --fail:#EB6C64; --fail-soft:#2E1918;
+    --live:#46CE8C; --live-soft:#122E20;
     --shadow:0 1px 2px rgba(0,0,0,.35),0 2px 8px rgba(0,0,0,.4);
   }}
   :root[data-theme="light"]{
     --ground:#F3F3F5; --surface:#FFFFFF; --surface-2:#F8F8FA; --ink:#191A1E; --muted:#585A64; --faint:#8A8D98;
     --border:#E5E6EA; --border-strong:#D0D2D9; --claude:#B65C3B; --claude-soft:#F4E7E0; --codex:#0B8A66; --codex-soft:#DBF0E9;
     --done:#5E6675; --done-soft:#EBECEF; --await:#B37A16; --await-soft:#F6EBD6; --fail:#C1443D; --fail-soft:#FAE7E5;
+    --live:#1FA055; --live-soft:#E4F5EC;
     --shadow:0 1px 2px rgba(16,24,40,.05),0 2px 6px rgba(16,24,40,.05);
   }
   :root[data-theme="dark"]{
     --ground:#0E1116; --surface:#171A21; --surface-2:#1C2029; --ink:#E9EBF0; --muted:#9BA1AE; --faint:#6B7280;
     --border:#282C35; --border-strong:#3A404C; --claude:#E2A084; --claude-soft:#33231B; --codex:#41BE96; --codex-soft:#12281F;
     --done:#8B93A2; --done-soft:#20242C; --await:#E3A94A; --await-soft:#2A2214; --fail:#EB6C64; --fail-soft:#2E1918;
+    --live:#46CE8C; --live-soft:#122E20;
     --shadow:0 1px 2px rgba(0,0,0,.35),0 2px 8px rgba(0,0,0,.4);
   }
   *{box-sizing:border-box}
@@ -72,8 +75,14 @@
   .who{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px;flex:0 0 auto;letter-spacing:.02em}
   .who.claude{background:var(--claude-soft);color:var(--claude)} .who.codex{background:var(--codex-soft);color:var(--codex)} .who.neutral{background:var(--surface-2);color:var(--muted)}
   .hb{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
-  .hb.live{background:var(--codex-soft);color:var(--codex)} .hb.live .d{width:7px;height:7px;border-radius:50%;background:var(--codex);animation:pulse 2s infinite}
+  .hb.live{background:var(--live-soft);color:var(--live)} .hb.live .d{width:7px;height:7px;border-radius:50%;background:var(--live);animation:pulse 2s infinite}
   .hb.stale{background:var(--await-soft);color:var(--await)} .hb.exited{background:var(--fail-soft);color:var(--fail)}
+  .pill.live{background:var(--live-soft);color:var(--live)} .pill.stale{background:var(--await-soft);color:var(--await)} .pill.dead{background:var(--fail-soft);color:var(--fail)} .pill.needs{background:var(--await-soft);color:var(--await)}
+  .pill.live .d{width:7px;height:7px;border-radius:50%;background:var(--live);display:inline-block;margin-right:6px;animation:pulse 2s infinite;vertical-align:middle}
+  .card.h-live{border-left-color:var(--live)} .card.h-needs{border-left-color:var(--await)}
+  .card.h-stale{border-left-color:var(--await);background:color-mix(in srgb,var(--await) 5%,var(--surface))}
+  .card.h-dead{border-left-color:var(--fail);background:color-mix(in srgb,var(--fail) 7%,var(--surface))}
+  .stat.live .n{color:var(--live)} .stat.stale .n{color:var(--await)} .stat.dead .n{color:var(--fail)}
   .activity .act b{color:var(--ink);font-weight:660} .activity .act{min-width:0}
   .meta{display:flex;gap:24px;padding:0 19px 15px;flex-wrap:wrap}
   .meta .cell .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:18px;font-weight:640;margin-top:2px}
@@ -153,24 +162,26 @@ function detail(r){let h='<div class="detail">';(r.steps||[]).forEach(s=>{const 
     ${s.note?`<div class="note">${esc(s.note)}</div>`:''}</div><span class="st">${esc(s.state)}</span></div>`;});return h+'</div>';}
 function card(r){
   const cur=curStep(r), ck=cur?kindOf(cur.actor):"neutral";
-  const acc=r.status==="done"?"acc-done":(r.gate&&!isAns(r))?"acc-await":`acc-${ck}`;
+  const h=r.health||"live";
+  const age=r.staleSecs!=null?r.staleSecs:Math.max(0,Math.round(Date.now()/1000-(r.updatedAt||0)));
+  const aStr=age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
+  const cls=r.status==="done"?"":(r.gate&&!isAns(r))?"h-needs":h==="stale"?"h-stale":h==="exited"?"h-dead":"h-live";
   let pill;
   if(r.status==="done") pill=`<span class="pill done">merged ✓</span>`;
-  else if(r.gate&&!isAns(r)) pill=`<span class="pill await">needs you</span>`;
-  else if(r.status==="fail") pill=`<span class="pill fail">failed</span>`;
-  else pill=`<span class="pill ${ck}">${whoLabel(ck)} ${r.status==="review"?"· fixing":"working"}</span>`;
+  else if(r.gate&&!isAns(r)) pill=`<span class="pill needs">needs you</span>`;
+  else if(h==="exited") pill=`<span class="pill dead">■ not running</span>`;
+  else if(h==="stale") pill=`<span class="pill stale">⚠ stalled · ${aStr}</span>`;
+  else pill=`<span class="pill live"><span class="d"></span>running</span>`;
   const m=r.metrics||{}, prTxt=r.pr?`#${r.pr.number} ${String(r.pr.state||"").toLowerCase()}`:"no PR yet";
   let activity="";
-  if(r.status!=="done" && !(r.gate&&!isAns(r))){
-    const badge=hb(r);
-    const cs=cur?`<span class="who ${ck}">${whoLabel(ck)}</span><span class="act"><b>${esc(cur.name)}</b>${cur.note?` — ${esc(cur.note)}`:""}</span>`:"";
-    if(badge||cs) activity=`<div class="activity">${badge}${cs}</div>`;
+  if(cur && r.status!=="done" && !(r.gate&&!isAns(r))){
+    activity=`<div class="activity"><span class="who ${ck}">${whoLabel(ck)}</span><span class="act"><b>${esc(cur.name)}</b>${cur.note?` — ${esc(cur.note)}`:""}</span></div>`;
   }
   let gate="";
   if(r.gate&&!isAns(r)){gate=`<div class="gate"><div class="q">${esc(r.gate.question)}</div><div class="opts">`+
     (r.gate.options||[]).map(o=>`<button class="btn ${o.primary?'primary':''}" data-ans="${esc(r.id)}" data-choice="${esc(o.label)}">${esc(o.label)}</button>`).join("")+`</div></div>`;}
   else if(isAns(r)){gate=`<div class="answered">✓ You chose <b>${esc(ansChoice(r))}</b> — sent to the run</div>`;}
-  return `<div class="card ${acc} ${open[r.id]?'open':''}" data-id="${esc(r.id)}">
+  return `<div class="card ${cls} ${open[r.id]?'open':''}" data-id="${esc(r.id)}">
     <div class="head" data-toggle="${esc(r.id)}">
       <div style="min-width:0"><div class="repo">${esc(r.repo)} · ${esc(r.branch)}</div><div class="title">${esc(r.title)}</div></div>
       ${pill}<span class="caret">▸</span></div>
@@ -187,12 +198,15 @@ function card(r){
 }
 function render(){
   const needs=RUNS.filter(r=>r.gate&&!isAns(r)), rest=RUNS.filter(r=>!(r.gate&&!isAns(r)));
-  const nRun=RUNS.filter(r=>["running","review"].includes(r.status)).length, nAwait=needs.length, nDone=RUNS.filter(r=>r.status==="done").length;
+  const activeRuns=RUNS.filter(r=>r.status!=="done" && !(r.gate&&!isAns(r)));
+  const byH=h=>activeRuns.filter(r=>(r.health||"live")===h).length;
+  const nLive=byH("live"), nStale=byH("stale"), nDead=byH("exited"), nAwait=needs.length, nDone=RUNS.filter(r=>r.status==="done").length;
   document.getElementById("summary").innerHTML=
-    `<div class="stat run"><div class="n">${nRun}</div><div class="k lbl">running</div></div>
-     <div class="stat await"><div class="n">${nAwait}</div><div class="k lbl">need you</div></div>
-     <div class="stat done"><div class="n">${nDone}</div><div class="k lbl">done</div></div>
-     <div class="stat"><div class="n">${RUNS.length}</div><div class="k lbl">total runs</div></div>`;
+    `<div class="stat live"><div class="n">${nLive}</div><div class="k lbl">live</div></div>
+     <div class="stat stale"><div class="n">${nStale}</div><div class="k lbl">stalled</div></div>`+
+    (nDead?`<div class="stat dead"><div class="n">${nDead}</div><div class="k lbl">not running</div></div>`:"")+
+    `<div class="stat await"><div class="n">${nAwait}</div><div class="k lbl">need you</div></div>
+     <div class="stat done"><div class="n">${nDone}</div><div class="k lbl">done</div></div>`;
   const needsEl=document.getElementById("needs");
   if(nAwait){needsEl.innerHTML=`<h2>Needs you <span class="count-pill">${nAwait}</span></h2><div class="grid">`+needs.map(card).join("")+`</div>`;needsEl.style.display="";}
   else needsEl.style.display="none";

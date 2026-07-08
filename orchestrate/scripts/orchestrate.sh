@@ -107,7 +107,7 @@ else
   ILOG="$(mktemp -t orch-ilog-XXXX).log"
   # Progress heartbeat: keep the run "live" only while Codex output grows; if it
   # hangs (log frozen) heartbeats stop and the dashboard flips it to "stalled".
-  ( last=-1; while :; do sz=$(wc -c <"$ILOG" 2>/dev/null || echo 0); [[ "$sz" != "$last" ]] && { emit heartbeat --id "$RUN_ID" --pid $$; last="$sz"; }; sleep 15; done ) & HBPID=$!
+  ( last=-1; while :; do sz=$(wc -c <"$ILOG" 2>/dev/null || echo 0); [[ "$sz" != "$last" ]] && { emit heartbeat --id "$RUN_ID" --pid $$; last="$sz"; }; sleep 10; done ) & HBPID=$!
   codex exec -s "$SANDBOX" -c approval_policy=never -c model_reasoning_effort="$EXEC_EFFORT" -o "$IMPL" - < "$IPROMPT" >"$ILOG" 2>&1; rc=$?
   kill "$HBPID" 2>/dev/null || true
   [[ $rc -eq 0 ]] || { echo "  codex log tail:"; tail -n 3 "$ILOG" 2>/dev/null; die "implement step failed (log: $ILOG)"; }
