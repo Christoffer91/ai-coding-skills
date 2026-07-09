@@ -8,7 +8,7 @@ serves an aggregate dashboard, and accepts click-to-answer gate responses
 Usage:  orchestrate-dashboard [--port 4600]      (env: ORCH_DASH_PORT)
 Binds to 127.0.0.1 only. No dependencies (Python 3 stdlib).
 """
-import http.server, socketserver, json, os, glob, time, argparse, urllib.parse, threading, subprocess, signal
+import http.server, socketserver, json, os, glob, time, argparse, urllib.parse, threading, subprocess, signal, re
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
@@ -17,6 +17,7 @@ ANS  = os.path.join(BASE, "answers")
 HERE = os.path.dirname(os.path.abspath(__file__))
 HTML = os.path.join(HERE, "dashboard.html")
 STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "75"))  # no update for this long => "stalled?"
+RETENTION_SECS = 7 * 24 * 60 * 60
 
 
 def pid_alive(pid):
@@ -56,7 +57,11 @@ def load_runs():
         alive = pid_alive(r.get("pid"))
         r["pidAlive"] = alive
         status = r.get("status")
-        if status in ("done", "failed"):
+        if status == "handoff":
+            r["health"] = "handoff"
+        elif status in ("failed", "fail"):
+            r["health"] = "failed"
+        elif status == "done":
             r["health"] = "done"
         elif r.get("gate") and not r.get("answered"):
             r["health"] = "waiting"       # blocked on you, not a liveness concern
@@ -70,17 +75,100 @@ def load_runs():
     return out
 
 
-def reap(pid):
-    """Kill a run's worker process group (driver + its Codex child), best effort."""
-    if not pid:
-        return
+def process_start(pid):
     try:
-        os.killpg(os.getpgid(int(pid)), signal.SIGKILL)
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True,
+                              text=True, timeout=3).stdout.strip() or None
     except Exception:
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-        except Exception:
-            pass
+        return None
+
+
+def process_cwd(pid):
+    try:
+        out = subprocess.run(["lsof", "-a", "-p", str(int(pid)), "-d", "cwd", "-Fn"],
+                             capture_output=True, text=True, timeout=3).stdout
+        return next((line[1:] for line in out.splitlines() if line.startswith("n")), None)
+    except Exception:
+        return None
+
+
+def process_matches(record):
+    """Match a PID to its recorded start token and cwd so PID reuse fails closed."""
+    pid = record.get("pid")
+    expected_start = record.get("pidStart", record.get("startedAt"))
+    expected_cwd = record.get("pidCwd", record.get("cwd"))
+    if not (pid and expected_start and expected_cwd):
+        return False
+    actual_start = process_start(pid)
+    actual_cwd = process_cwd(pid)
+    return (actual_start == expected_start and actual_cwd is not None
+            and os.path.realpath(actual_cwd) == os.path.realpath(expected_cwd))
+
+
+def direct_children(pid):
+    try:
+        out = subprocess.run(["pgrep", "-P", str(int(pid))], capture_output=True,
+                             text=True, timeout=3).stdout
+        return [int(p) for p in out.split() if p.isdigit()]
+    except Exception:
+        return []
+
+
+def kill_recorded_process(record):
+    if not process_matches(record):
+        return False
+    pid = int(record["pid"])
+    try:
+        pgid = os.getpgid(pid)
+        if pgid == pid and int(record.get("pgid") or -1) == pid:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            for child in direct_children(pid):
+                try: os.kill(child, signal.SIGKILL)
+                except Exception: pass
+            os.kill(pid, signal.SIGKILL)
+        return True
+    except Exception:
+        return False
+
+
+def reap(run):
+    """Kill only identity-matched processes recorded for this run."""
+    worker = run.get("worker")
+    if worker:
+        kill_recorded_process(worker)
+    return kill_recorded_process(run)
+
+
+def is_linked_worktree(cwd):
+    try:
+        git_dir = subprocess.run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-dir"],
+                                 capture_output=True, text=True, timeout=4, check=True).stdout.strip()
+        common = subprocess.run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=4, check=True).stdout.strip()
+        return os.path.realpath(git_dir) != os.path.realpath(common)
+    except Exception:
+        return False
+
+
+def validate_restart(r):
+    cwd, topic, driver = r.get("cwd"), r.get("topic"), r.get("driver")
+    restart = r.get("restart") or {}
+    plan = restart.get("plan")
+    if not restart.get("dedicatedWorktree"):
+        return "automatic restart is restricted to a recorded dedicated worktree"
+    if not (cwd and os.path.isdir(cwd) and is_linked_worktree(cwd)):
+        return "recorded dedicated worktree is missing or invalid"
+    root = os.path.realpath(cwd)
+    if not (topic and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,60}", topic)):
+        return "recorded topic is invalid"
+    if not (driver and os.path.isfile(driver) and os.path.basename(driver) == "orchestrate.sh"
+            and os.path.commonpath([root, os.path.realpath(driver)]) == root):
+        return "recorded driver is not inside the dedicated worktree"
+    if not (plan and os.path.isfile(plan)
+            and os.path.commonpath([root, os.path.realpath(plan)]) == root):
+        return "recorded plan is not inside the dedicated worktree"
+    return None
 
 
 def restart_or_kill(rid, kill_only=False):
@@ -92,21 +180,49 @@ def restart_or_kill(rid, kill_only=False):
             r = json.load(fh)
     except Exception:
         return (404, json.dumps({"error": "no such run"}))
-    reap(r.get("pid"))
     if kill_only:
+        reap(r)
         return (200, json.dumps({"ok": True, "killed": True}))
-    cwd, topic, driver = r.get("cwd"), r.get("topic"), r.get("driver")
-    if not (cwd and topic and driver and os.path.isdir(cwd)
-            and os.path.isfile(driver) and os.path.basename(driver) == "orchestrate.sh"):
-        return (409, json.dumps({"error": "can't auto-restart this run (no recorded cwd/driver — started before restart support, or an in-session run). Re-run it from a terminal / Claude session."}))
+    error = validate_restart(r)
+    if error:
+        return (409, json.dumps({"error": error}))
+    cwd, topic, driver = r["cwd"], r["topic"], r["driver"]
+    plan = r["restart"]["plan"]
+    reap(r)
     os.makedirs(os.path.join(BASE, "logs"), exist_ok=True)
     logf = open(os.path.join(BASE, "logs", rid + ".log"), "ab")
-    env = dict(os.environ); env["ORCH_RESTART"] = "1"
+    env = dict(os.environ)
+    for key, value in (r.get("restart", {}).get("env") or {}).items():
+        if key.startswith("ORCH_"):
+            env[key] = str(value)
+    env.update({"ORCH_RESTART": "1", "ORCH_WORKTREE": "0", "ORCH_DEDICATED_WORKTREE": "1"})
     try:
-        subprocess.Popen([driver, topic], cwd=cwd, env=env, stdout=logf, stderr=logf, start_new_session=True)
+        subprocess.Popen([driver, topic, plan], cwd=cwd, env=env, stdout=logf, stderr=logf, start_new_session=True)
     except Exception as e:
+        logf.close()
         return (500, json.dumps({"error": f"launch failed: {e}"}))
+    logf.close()
     return (200, json.dumps({"ok": True, "restarted": topic}))
+
+
+def cleanup_retained_runs(now=None):
+    """Remove terminal run/answer files older than seven days."""
+    now = int(time.time()) if now is None else int(now)
+    for filename in glob.glob(os.path.join(RUNS, "*.json")):
+        try:
+            with open(filename) as fh:
+                run = json.load(fh)
+        except Exception:
+            continue
+        if run.get("status") not in ("done", "failed", "fail"):
+            continue
+        if now - int(run.get("updatedAt", now)) <= RETENTION_SECS:
+            continue
+        try: os.remove(filename)
+        except OSError: pass
+        answer = os.path.join(ANS, os.path.basename(filename))
+        try: os.remove(answer)
+        except OSError: pass
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -178,6 +294,7 @@ def main():
         threading.Thread(target=_watch_parent, daemon=True).start()
     os.makedirs(RUNS, exist_ok=True)
     os.makedirs(ANS, exist_ok=True)
+    cleanup_retained_runs()
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("127.0.0.1", args.port), Handler) as srv:
         print(f"orchestrate dashboard → http://localhost:{args.port}   (runs: {RUNS})")

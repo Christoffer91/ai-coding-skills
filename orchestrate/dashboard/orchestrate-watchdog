@@ -3,8 +3,8 @@
 
 Companion to the driver's built-in auto-recovery, for the cases the driver can't
 reach: a run whose whole driver process died, or an in-session run that stalled.
-It DETECTS (stalled/exited), REAPS any orphaned `codex` process still living in the
-run's cwd, and ESCALATES (marks the run `needsRestart` + logs to
+It DETECTS (stalled/exited), REAPS only the exact recorded Codex worker, and
+ESCALATES (marks the run `needsRestart` + logs to
 ~/.orchestrate/watchdog.log). It does NOT redispatch — use the dashboard's
 Restart button or re-run the topic manually.
 
@@ -34,32 +34,66 @@ def pid_alive(pid):
         return None
 
 
-def codex_pids_in(cwd):
-    """PIDs of codex processes whose cwd is inside `cwd` (orphaned workers)."""
-    pids = []
-    if not cwd:
-        return pids
+def process_start(pid):
     try:
-        out = subprocess.run(["lsof", "-a", "-d", "cwd", "-c", "codex", "-Fpn"],
-                             capture_output=True, text=True, timeout=6).stdout
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True,
+                              text=True, timeout=3).stdout.strip() or None
     except Exception:
-        return pids
-    cur = None
-    root = cwd.rstrip("/")
-    for line in out.splitlines():
-        if line.startswith("p"):
-            cur = line[1:]
-        elif line.startswith("n") and cur:
-            path = line[1:]
-            if path == root or path.startswith(root + "/"):
-                try: pids.append(int(cur))
-                except ValueError: pass
-    return pids
+        return None
+
+
+def process_cwd(pid):
+    try:
+        out = subprocess.run(["lsof", "-a", "-p", str(int(pid)), "-d", "cwd", "-Fn"],
+                             capture_output=True, text=True, timeout=3).stdout
+        return next((line[1:] for line in out.splitlines() if line.startswith("n")), None)
+    except Exception:
+        return None
+
+
+def process_matches(worker):
+    pid, expected_start, expected_cwd = worker.get("pid"), worker.get("startedAt"), worker.get("cwd")
+    if not (pid and expected_start and expected_cwd):
+        return False
+    actual_cwd = process_cwd(pid)
+    return (process_start(pid) == expected_start and actual_cwd is not None
+            and os.path.realpath(actual_cwd) == os.path.realpath(expected_cwd))
+
+
+def start_epoch(token):
+    try:
+        return int(time.mktime(time.strptime(token, "%a %b %d %H:%M:%S %Y")))
+    except (TypeError, ValueError):
+        return None
+
+
+def reap_recorded_worker(run):
+    """Reap only an identity-matched worker that began after its owning run."""
+    worker = run.get("worker") or {}
+    if not process_matches(worker):
+        return []
+    began = start_epoch(worker.get("startedAt"))
+    run_began = run.get("startedAt")
+    if run_began is not None and (began is None or began < int(run_began)):
+        return []
+    pid = int(worker["pid"])
+    try:
+        pgid = os.getpgid(pid)
+        if pgid == pid and int(worker.get("pgid") or -1) == pid:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+        return [pid]
+    except Exception:
+        return []
 
 
 def save(r):
-    with open(os.path.join(RUNS, os.path.basename(r["id"]) + ".json"), "w") as fh:
+    target = os.path.join(RUNS, os.path.basename(r["id"]) + ".json")
+    tmp = target + ".tmp"
+    with open(tmp, "w") as fh:
         json.dump(r, fh, indent=2)
+    os.replace(tmp, target)
 
 
 def logline(msg):
@@ -80,7 +114,7 @@ def sweep(grace, handled):
         except Exception:
             continue
         status = r.get("status")
-        if status in ("done", "failed"):
+        if status in ("done", "failed", "fail", "handoff", "await"):
             continue
         answered = os.path.exists(os.path.join(ANS, os.path.basename(f)))
         if r.get("gate") and not answered:
@@ -93,12 +127,7 @@ def sweep(grace, handled):
             continue
         if handled.get(r["id"]) == r.get("updatedAt"):
             continue  # already escalated this exact state
-        reaped = []
-        for pid in codex_pids_in(r.get("cwd")):
-            try:
-                os.kill(pid, signal.SIGKILL); reaped.append(pid)
-            except Exception:
-                pass
+        reaped = reap_recorded_worker(r)
         r["needsRestart"] = True
         r["watchdog"] = {"at": now, "reason": "exited" if dead else "stalled", "reaped": reaped}
         save(r)
@@ -111,7 +140,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--poll", type=int, default=int(os.environ.get("ORCH_WATCH_POLL", "30")))
     ap.add_argument("--grace", type=int, default=int(os.environ.get("ORCH_WATCH_GRACE",
-                    str(int(os.environ.get("ORCH_STALE_SECS", "75")) + 120))))
+                    str(int(os.environ.get("ORCH_STALL_KILL", "300")) + 120))))
     ap.add_argument("--once", action="store_true", help="one sweep then exit (for cron/testing)")
     a = ap.parse_args()
     os.makedirs(RUNS, exist_ok=True)
