@@ -40,9 +40,9 @@ Next (optional but recommended):
   1. Append the model-roles contract so sessions default to the split:
        cat "$HERE/contract/CLAUDE.snippet.md"  >> ~/.claude/CLAUDE.md
        cat "$HERE/contract/AGENTS.snippet.md"  >> ~/.codex/AGENTS.md
-  2. Confirm Codex is logged in and set to gpt-5.5:
+  2. Confirm Codex is logged in and set to gpt-5.6-sol:
        codex --version && codex login status
-       # ~/.codex/config.toml -> model = "gpt-5.5"
+       # ~/.codex/config.toml -> model = "gpt-5.6-sol"
   3. Confirm gh auth:  gh auth status   (needs repo + workflow scopes)
   4. Per repo you want to use it in:
        cp "$HERE/contract/orchestrate.toml.example" <repo>/.ai/orchestrate.toml
