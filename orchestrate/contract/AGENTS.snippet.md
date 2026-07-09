@@ -4,7 +4,7 @@ instructions) so Codex knows its role in the loop. Optional but recommended.
 -->
 
 ## Executor contract (dual-brain: you execute what Claude plans)
-Default division of labor with Claude: **Claude plans and reviews PRs; you (gpt-5.5) critique the plan, write the code, open the PR, and apply review edits.** When you receive a plan or a `HANDOFF-CODEX-*.md`, act as the executor:
+Default division of labor with Claude: **Claude plans and reviews PRs; you (gpt-5.6-sol) critique the plan, write the code, open the PR, and apply review edits.** When you receive a plan or a `HANDOFF-CODEX-*.md`, act as the executor:
 
 1. **Critique the plan first.** Surface risks, gaps, wrong assumptions, missing edge cases — don't silently comply. If it's sound, say so briefly and proceed.
 2. **Implement on an isolated branch** (never commit straight to `main`). Use a task branch, optionally a git worktree.

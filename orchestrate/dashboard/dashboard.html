@@ -122,7 +122,7 @@
   <header>
     <div>
       <h1>orchestrate</h1>
-      <div class="sub">dual-brain runs on this machine · <span style="color:var(--claude);font-weight:600">Claude</span> plans &amp; reviews · <span style="color:var(--codex);font-weight:600">Codex</span> (gpt-5.5) executes</div>
+      <div class="sub">dual-brain runs on this machine · <span style="color:var(--claude);font-weight:600">Claude</span> plans &amp; reviews · <span style="color:var(--codex);font-weight:600">Codex</span> (gpt-5.6-sol) executes</div>
     </div>
     <div class="live"><span class="dot"></span><span id="clock">connecting…</span></div>
   </header>
@@ -200,7 +200,7 @@ function card(r){
       <div class="cell"><div class="lbl">elapsed</div><div class="v">${r.startedAt?dur(r.startedAt):"—"}</div></div>
       <div class="cell"><div class="lbl">updated</div><div class="v small">${r.updatedAt?ago(r.updatedAt):"—"}</div></div>
       <div class="cell"><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div></div>
-    <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.5")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
+    <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.6-sol")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
       ${r.pr?`<a class="pr" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">${prTxt} ↗</a>`:`<span class="chip">${prTxt}</span>`}</div>
     ${gate}${actions}${detail(r)}</div>`;
 }

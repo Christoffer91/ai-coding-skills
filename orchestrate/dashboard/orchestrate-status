@@ -5,7 +5,7 @@ Writes ~/.orchestrate/runs/<id>.json. Call it from the /orchestrate skill or the
 driver at each step. No dependencies (Python 3 stdlib).
 
   orchestrate-status start  --id ID --repo R --topic T --title "…" --branch B \
-                            [--planner "Opus 4.8"] [--executor "gpt-5.5 · medium"] [--mode supervised]
+                            [--planner "Opus 4.8"] [--executor "gpt-5.6-sol · medium"] [--mode supervised]
   orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"]
   orchestrate-status pr     --id ID --number N --url U [--state OPEN]
   orchestrate-status metric --id ID --key tests --value "12/12"
@@ -21,7 +21,7 @@ BASE = os.path.join(HOME, ".orchestrate")
 RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
 STEP_NAMES = ["Plan", "Critique plan", "Implement", "Open PR", "Review PR", "Apply edits", "Deploy"]
-STEP_ACTORS = ["Claude", "gpt-5.5", "gpt-5.5·med", "driver", "Claude", "gpt-5.5·med", "gated"]
+STEP_ACTORS = ["Claude", "gpt-5.6-sol", "gpt-5.6-sol·med", "driver", "Claude", "gpt-5.6-sol·med", "gated"]
 
 def path(rid):
     rid = os.path.basename(rid)
@@ -53,7 +53,7 @@ def main():
 
     p = sub.add_parser("start"); common(p)
     for f in ("repo", "topic", "title", "branch"): p.add_argument("--" + f, required=True)
-    p.add_argument("--planner", default="Claude"); p.add_argument("--executor", default="gpt-5.5 · medium")
+    p.add_argument("--planner", default="Claude"); p.add_argument("--executor", default="gpt-5.6-sol · medium")
     p.add_argument("--mode", default="hands-off"); p.add_argument("--pid", type=int, default=None)
     p.add_argument("--cwd", default=None); p.add_argument("--driver", default=None)  # for one-click restart
 

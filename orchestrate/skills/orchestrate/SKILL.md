@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: "Run the dual-brain plan→execute→review→ship loop end-to-end: Claude plans and reviews the PR, OpenAI Codex CLI (gpt-5.5) critiques the plan, writes the code, opens the PR, and applies review edits. Use to take a well-spec'd change from idea to merged/deployed. Default hands-off; pass --supervised to gate each step. Not for trivial one-file edits (just do it) or plan-only work. Keywords: orchestrate, ship it, dual-brain, plan execute review loop, autonomous PR, hand to codex, relay."
+description: "Run the dual-brain plan→execute→review→ship loop end-to-end: Claude plans and reviews the PR, OpenAI Codex CLI (gpt-5.6-sol) critiques the plan, writes the code, opens the PR, and applies review edits. Use to take a well-spec'd change from idea to merged/deployed. Default hands-off; pass --supervised to gate each step. Not for trivial one-file edits (just do it) or plan-only work. Keywords: orchestrate, ship it, dual-brain, plan execute review loop, autonomous PR, hand to codex, relay."
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash
 ---
 
@@ -8,13 +8,13 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash
 
 ## Purpose
 Drive a change from plan to (optionally) deployed across two models:
-**Claude** (a strong planning/reviewing model, e.g. Opus) plans the change and reviews the PR — the taste/judgment half; **OpenAI Codex CLI** (`gpt-5.5`) critiques the plan, writes the code, opens the PR, and applies review edits — the execution half. The idea: keep expensive judgment work on Claude, hand mechanical, well-spec'd execution to Codex (which runs on your ChatGPT/Codex subscription).
+**Claude** (a strong planning/reviewing model, e.g. Fable or Opus) plans the change and reviews the PR — the taste/judgment half; **OpenAI Codex CLI** (`gpt-5.6-sol`) critiques the plan, writes the code, opens the PR, and applies review edits — the execution half. The idea: keep expensive judgment work on Claude, hand mechanical, well-spec'd execution to Codex (which runs on your ChatGPT/Codex subscription).
 
 This skill is the conductor — it drives the loop with plain `codex` / `gh` / `git` commands, inlined below so it depends on nothing but those CLIs. If you *also* have review/handover/risk skills, use them at the matching steps (see "Optional enhancements").
 
 ## Requirements (check once)
 1. In a git repo with a remote and a clean-enough tree (`git rev-parse --show-toplevel`).
-2. `codex --version` OK and logged in (`codex login`) → provides `gpt-5.5`. If missing, tell the user to install/log in and stop.
+2. `codex --version` OK and logged in (`codex login`) → provides `gpt-5.6-sol`. If missing, tell the user to install/log in and stop.
 3. `gh auth status` OK with `repo` + `workflow` scopes.
 4. Optional per-repo config `.ai/orchestrate.toml` (deploy target, effort, caps) — see `references/auto-deploy-safety.md`. Absent → deploy is human-gated.
 
@@ -28,14 +28,14 @@ This skill is the conductor — it drives the loop with plain `codex` / `gh` / `
 ### 1 — Plan (Claude)
 Produce a concrete spec at `PLAN-<topic>.md`. Track loop state (step, branch, PR#, iteration) however you track long tasks — at minimum, the `HANDOFF-*.md` files + branch + PR are the durable state.
 
-### 2 — Critique the plan (Codex / gpt-5.5)
+### 2 — Critique the plan (Codex / gpt-5.6-sol)
 ```bash
 codex exec -s read-only -o /tmp/orch-critique.md \
   "You are an elite engineer. Critique this plan for a change in $(pwd): risks, wrong assumptions, missing edge cases, simpler approaches, and anything that would make a reviewer reject the PR. Be specific and terse. Plan:\n\n$(cat PLAN-<topic>.md)" < /dev/null
 ```
 Read it. Hands-off: fold in valid points, revise the plan, proceed. Supervised: show critique + revisions, wait.
 
-### 3 — Implement (Codex / gpt-5.5)
+### 3 — Implement (Codex / gpt-5.6-sol)
 Create the task branch, write a handoff (format below), then implement:
 ```bash
 git switch -c orch/<topic>
@@ -56,7 +56,7 @@ gh pr diff <n> > /tmp/orch-pr.diff
 ```
 Review the diff for correctness, security, contract, and taste — this is Claude's judgment pass. Optional independent lens: `codex review --base main`. Categorize findings blocking / notable / nit. No blocking → step 7. Blocking → step 6.
 
-### 6 — Apply review edits (Codex / gpt-5.5)
+### 6 — Apply review edits (Codex / gpt-5.6-sol)
 Resume the **specific** implement session — Codex prints `session id: <uuid>` in step 3; capture it. Not `resume --last`: with several Codex runs going at once, `--last` can hijack a concurrent session and fix the wrong work.
 ```bash
 codex exec resume <session-id-from-step-3> -c model_reasoning_effort=medium -o /tmp/orch-fix.md \

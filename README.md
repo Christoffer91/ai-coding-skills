@@ -5,7 +5,7 @@ A small collection of portable **Claude Code / Codex** skills. Each top-level fo
 ## Skills
 | Skill | What it does |
 |---|---|
-| [orchestrate](orchestrate/) | Dual-brain plan → execute → review → ship loop: **Claude** plans & reviews the PR, **OpenAI Codex CLI (gpt-5.5)** critiques the plan, writes the code, opens the PR, and applies review edits. Deploy is human-gated. |
+| [orchestrate](orchestrate/) | Dual-brain plan → execute → review → ship loop: **Claude** plans & reviews the PR, **OpenAI Codex CLI (gpt-5.6-sol)** critiques the plan, writes the code, opens the PR, and applies review edits. Deploy is human-gated. |
 
 ## Install a skill
 Each skill folder has its own `README.md` and `install.sh`. For example:

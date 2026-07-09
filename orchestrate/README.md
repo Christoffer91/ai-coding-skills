@@ -2,14 +2,14 @@
 
 A Claude Code skill that takes a change from idea to (optionally) deployed across **two models**:
 
-- **Claude** (a strong planning/reviewing model, e.g. Opus) plans the change and reviews the PR — the taste/judgment half.
-- **OpenAI Codex CLI (`gpt-5.5`)** critiques the plan, writes the code, opens the PR, and applies review edits — the execution half.
+- **Claude** (a strong planning/reviewing model, e.g. Fable or Opus) plans the change and reviews the PR — the taste/judgment half.
+- **OpenAI Codex CLI (`gpt-5.6-sol`)** critiques the plan, writes the code, opens the PR, and applies review edits — the execution half.
 
 Keep expensive judgment work on Claude; hand mechanical, well-spec'd execution to Codex (which runs on your ChatGPT/Codex subscription). Default is hands-off; deploy is human-gated.
 
 ## Requirements
 - **Claude Code** CLI — the `/orchestrate` skill runs here.
-- **OpenAI Codex CLI**, installed and logged in (`codex login`) → provides `gpt-5.5`. Check: `codex --version`. Set `model = "gpt-5.5"` in `~/.codex/config.toml`.
+- **OpenAI Codex CLI**, installed and logged in (`codex login`) → provides `gpt-5.6-sol`. Check: `codex --version`. Set `model = "gpt-5.6-sol"` in `~/.codex/config.toml`.
 - **GitHub CLI `gh`**, authed with `repo` + `workflow` scopes (`gh auth status`).
 - **git**, and a repo with a remote.
 
@@ -53,6 +53,6 @@ install.sh                               installer
 ## Notes
 - Reasoning effort: critique + PR review run at your Codex config default (judgment); implement + fix run at `medium` (mechanical). Tune with `exec_effort` / `ORCH_EXEC_EFFORT`.
 - For Claude Desktop, bridge Codex in via `codex mcp-server` — see `skills/orchestrate/references/desktop-mcp-bridge.md`.
-- Not for trivial one-file edits — it's built for real, well-spec'd changes worth handing to gpt-5.5.
+- Not for trivial one-file edits — it's built for real, well-spec'd changes worth handing to gpt-5.6-sol.
 
 Licensed for internal reuse; adapt freely.

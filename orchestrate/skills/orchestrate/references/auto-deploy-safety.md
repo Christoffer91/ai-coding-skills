@@ -35,7 +35,7 @@ deploy_via   = "git-merge"          # OR for git-integrated hosts (Vercel/Netlif
 ci_gate      = true                 # require gh pr checks green before deploy (default true)
 max_iter     = 3                    # review<->fix loop cap (default 3)
 sandbox      = "workspace-write"    # codex exec sandbox for the implement step (default workspace-write)
-exec_effort  = "medium"             # gpt-5.5 reasoning effort for implement/fix (critique + review stay xhigh)
+exec_effort  = "medium"             # gpt-5.6-sol reasoning effort for implement/fix (critique + review stay xhigh)
 auto_merge   = false                # merge the PR before deploy (default false: leave merge to the user)
 ```
 

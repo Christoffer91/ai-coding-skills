@@ -1,6 +1,6 @@
 # Loop mechanics — Codex CLI flags, resume, runaway/cost rails
 
-Verified against Codex CLI `0.14x` (ChatGPT-OAuth login; config default `model = "gpt-5.5"`). Re-check with `codex exec --help` if your version differs.
+Verified against Codex CLI `0.14x` (ChatGPT-OAuth login; config default `model = "gpt-5.6-sol"`). Re-check with `codex exec --help` if your version differs.
 
 ## Codex exec flags used by the loop
 - `-s, --sandbox read-only | workspace-write | danger-full-access` — critique uses `read-only`; execute/fix use `workspace-write`.
@@ -13,7 +13,7 @@ Verified against Codex CLI `0.14x` (ChatGPT-OAuth login; config default `model =
 - `--output-schema <file>` — constrain the final answer to a JSON schema (machine-parsed step results).
 - `-C, --cd <dir>` / `--add-dir <dir>` — set the working root / extra writable dirs.
 - `-c model_reasoning_effort=low|medium|high|xhigh` — per-call effort override.
-- **Per-step effort in this loop:** critique and PR review keep the config default (judgment work); the mechanical implement/fix steps run at **`medium`** by default (configurable via `exec_effort` in `.ai/orchestrate.toml` or `ORCH_EXEC_EFFORT`). Coding a well-spec'd plan doesn't need max reasoning — it's faster and lighter, still on `gpt-5.5`.
+- **Per-step effort in this loop:** critique and PR review keep the config default (judgment work); the mechanical implement/fix steps run at **`medium`** by default (configurable via `exec_effort` in `.ai/orchestrate.toml` or `ORCH_EXEC_EFFORT`). Coding a well-spec'd plan doesn't need max reasoning — it's faster and lighter, still on `gpt-5.6-sol`.
 
 ## Resume / threading
 - `codex exec resume --last "<follow-up>"` — resume the most recent headless thread (used in step 6 to apply review edits with full prior context).
