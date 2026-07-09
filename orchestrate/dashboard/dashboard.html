@@ -1,225 +1,310 @@
 <style>
   :root{
-    --ground:#F3F3F5; --surface:#FFFFFF; --surface-2:#F8F8FA;
-    --ink:#191A1E; --muted:#585A64; --faint:#8A8D98; --border:#E5E6EA; --border-strong:#D0D2D9;
-    --claude:#B65C3B; --claude-soft:#F4E7E0;      /* who: Claude — warm clay */
-    --codex:#0B8A66;  --codex-soft:#DBF0E9;       /* who: Codex  — teal green */
-    --done:#5E6675;   --done-soft:#EBECEF;        /* finished — calm slate */
-    --await:#B37A16;  --await-soft:#F6EBD6;
-    --fail:#C1443D;   --fail-soft:#FAE7E5;
+    --ground:#F2F4F3; --surface:#FFFFFF; --surface-2:#F7F9F8;
+    --ink:#17191C; --muted:#5A6169; --faint:#8B929B; --border:#E3E7E5; --border-strong:#CBD2CE;
+    --claude:#B65C3B; --claude-soft:#F5E8E1;
+    --codex:#0B8A66;  --codex-soft:#DDF0E9;
+    --live:#1FA055;   --live-soft:#E3F4EA;
+    --await:#B37A16;  --await-soft:#F7ECD8;
+    --fail:#C1443D;   --fail-soft:#FAE8E6;
+    --done:#68707C;   --done-soft:#ECEEEF;
     --sans:ui-sans-serif,-apple-system,"SF Pro Text",system-ui,"Segoe UI",sans-serif;
-    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
-    --r:14px; --shadow:0 1px 2px rgba(16,24,40,.05),0 2px 6px rgba(16,24,40,.05);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,monospace;
+    --r:16px; --shadow:0 1px 2px rgba(20,24,28,.05),0 3px 10px rgba(20,24,28,.04);
   }
   @media (prefers-color-scheme:dark){:root{
-    --ground:#0E1116; --surface:#171A21; --surface-2:#1C2029;
-    --ink:#E9EBF0; --muted:#9BA1AE; --faint:#6B7280; --border:#282C35; --border-strong:#3A404C;
-    --claude:#E2A084; --claude-soft:#33231B; --codex:#41BE96; --codex-soft:#12281F;
-    --done:#8B93A2; --done-soft:#20242C; --await:#E3A94A; --await-soft:#2A2214; --fail:#EB6C64; --fail-soft:#2E1918;
-    --live:#46CE8C; --live-soft:#122E20;
-    --shadow:0 1px 2px rgba(0,0,0,.35),0 2px 8px rgba(0,0,0,.4);
+    --ground:#0E1213; --surface:#161B1C; --surface-2:#1B2122;
+    --ink:#EAEDEC; --muted:#9AA3A6; --faint:#6C757A; --border:#252C2D; --border-strong:#3A4345;
+    --claude:#DE9C7F; --claude-soft:#31241D; --codex:#3DBC92; --codex-soft:#11291F;
+    --live:#43C989; --live-soft:#0F2A1C; --await:#E0A94F; --await-soft:#2C2313;
+    --fail:#EA6E64; --fail-soft:#2F1917; --done:#8A939E; --done-soft:#20262A;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 3px 12px rgba(0,0,0,.35);
   }}
   :root[data-theme="light"]{
-    --ground:#F3F3F5; --surface:#FFFFFF; --surface-2:#F8F8FA; --ink:#191A1E; --muted:#585A64; --faint:#8A8D98;
-    --border:#E5E6EA; --border-strong:#D0D2D9; --claude:#B65C3B; --claude-soft:#F4E7E0; --codex:#0B8A66; --codex-soft:#DBF0E9;
-    --done:#5E6675; --done-soft:#EBECEF; --await:#B37A16; --await-soft:#F6EBD6; --fail:#C1443D; --fail-soft:#FAE7E5;
-    --live:#1FA055; --live-soft:#E4F5EC;
-    --shadow:0 1px 2px rgba(16,24,40,.05),0 2px 6px rgba(16,24,40,.05);
+    --ground:#F2F4F3; --surface:#FFFFFF; --surface-2:#F7F9F8; --ink:#17191C; --muted:#5A6169; --faint:#8B929B;
+    --border:#E3E7E5; --border-strong:#CBD2CE; --claude:#B65C3B; --claude-soft:#F5E8E1; --codex:#0B8A66; --codex-soft:#DDF0E9;
+    --live:#1FA055; --live-soft:#E3F4EA; --await:#B37A16; --await-soft:#F7ECD8; --fail:#C1443D; --fail-soft:#FAE8E6;
+    --done:#68707C; --done-soft:#ECEEEF;
+    --shadow:0 1px 2px rgba(20,24,28,.05),0 3px 10px rgba(20,24,28,.04);
   }
   :root[data-theme="dark"]{
-    --ground:#0E1116; --surface:#171A21; --surface-2:#1C2029; --ink:#E9EBF0; --muted:#9BA1AE; --faint:#6B7280;
-    --border:#282C35; --border-strong:#3A404C; --claude:#E2A084; --claude-soft:#33231B; --codex:#41BE96; --codex-soft:#12281F;
-    --done:#8B93A2; --done-soft:#20242C; --await:#E3A94A; --await-soft:#2A2214; --fail:#EB6C64; --fail-soft:#2E1918;
-    --live:#46CE8C; --live-soft:#122E20;
-    --shadow:0 1px 2px rgba(0,0,0,.35),0 2px 8px rgba(0,0,0,.4);
+    --ground:#0E1213; --surface:#161B1C; --surface-2:#1B2122; --ink:#EAEDEC; --muted:#9AA3A6; --faint:#6C757A;
+    --border:#252C2D; --border-strong:#3A4345; --claude:#DE9C7F; --claude-soft:#31241D; --codex:#3DBC92; --codex-soft:#11291F;
+    --live:#43C989; --live-soft:#0F2A1C; --await:#E0A94F; --await-soft:#2C2313; --fail:#EA6E64; --fail-soft:#2F1917;
+    --done:#8A939E; --done-soft:#20262A;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 3px 12px rgba(0,0,0,.35);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:15.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:1160px;margin:0 auto;padding:34px 26px 72px}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    font-size:15.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:38px 28px 80px}
   .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
-  .lbl{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700}
-  header{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:22px;flex-wrap:wrap}
-  h1{font-size:27px;font-weight:720;letter-spacing:-.02em;margin:0}
-  .sub{color:var(--muted);font-size:15px;margin-top:5px}
-  .legend{display:flex;gap:14px;align-items:center;margin:2px 0 24px;font-size:13px;color:var(--muted)}
-  .legend .k{display:inline-flex;align-items:center;gap:6px}
-  .legend .sw{width:11px;height:11px;border-radius:50%}
-  .live{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13.5px;font-family:var(--mono)}
-  .live .dot{width:9px;height:9px;border-radius:50%;background:var(--codex);animation:pulse 2.4s infinite}
-  @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--codex) 55%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
-  @media (prefers-reduced-motion:reduce){.live .dot{animation:none}}
-  .summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:30px}
-  .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:15px 20px;min-width:128px;box-shadow:var(--shadow)}
-  .stat .n{font-size:32px;font-weight:720;font-family:var(--mono);font-variant-numeric:tabular-nums;line-height:1.05}
-  .stat.await .n{color:var(--await)} .stat.run .n{color:var(--codex)} .stat.done .n{color:var(--done)}
-  .stat .k{margin-top:4px}
-  section h2{font-size:13.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:720;margin:0 0 13px;display:flex;align-items:center;gap:9px}
-  .count-pill{font-family:var(--mono);background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2px 10px;font-size:12.5px;color:var(--muted)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));gap:16px}
-  .card{background:var(--surface);border:1px solid var(--border);border-left-width:4px;border-left-color:var(--border);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden;transition:border-color .15s}
+  .lbl{font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);font-weight:650;font-family:var(--mono)}
+
+  /* ── header: mono identity ─────────────────────────────── */
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:26px;flex-wrap:wrap}
+  h1{font-family:var(--mono);font-size:26px;font-weight:700;letter-spacing:-.03em;margin:0}
+  h1 .tick{color:var(--codex)}
+  .sub{color:var(--muted);font-size:14.5px;margin-top:6px}
+  .sub b{font-weight:640}
+  .sub .c1{color:var(--claude)} .sub .c2{color:var(--codex)}
+  .clockline{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;font-family:var(--mono)}
+  .clockline .dot{width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--live) 50%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  @media (prefers-reduced-motion:reduce){.clockline .dot,.node.active,.tchip.on{animation:none!important}}
+
+  /* ── status strip: chips, zeros hidden ─────────────────── */
+  .strip{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:30px;align-items:center}
+  .schip{font-family:var(--mono);font-size:13px;font-weight:650;padding:7px 14px;border-radius:22px;
+    display:inline-flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);color:var(--muted)}
+  .schip .n{font-size:15px;font-weight:720}
+  .schip.needs{background:var(--await-soft);border-color:color-mix(in srgb,var(--await) 35%,transparent);color:var(--await)}
+  .schip.dead{background:var(--fail-soft);border-color:color-mix(in srgb,var(--fail) 30%,transparent);color:var(--fail)}
+  .schip.stale{color:var(--await)}
+  .schip.liv{color:var(--live)}
+  .schip.liv .d{width:7px;height:7px;border-radius:50%;background:var(--live);animation:pulse 2.2s infinite}
+  .schip.claude{color:var(--claude)}
+
+  section h2{font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+    font-weight:700;font-family:var(--mono);margin:0 0 14px;display:flex;align-items:center;gap:9px}
+  .count-pill{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-size:12px;color:var(--muted)}
+
+  /* ── cards: widen when few ─────────────────────────────── */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:18px}
+  @media (max-width:560px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+    box-shadow:var(--shadow);overflow:hidden;transition:border-color .15s}
   .card:hover{border-color:var(--border-strong)}
-  .card.acc-claude{border-left-color:var(--claude)} .card.acc-codex{border-left-color:var(--codex)} .card.acc-await{border-left-color:var(--await)} .card.acc-done{border-left-color:var(--done)}
-  .card .head{display:flex;align-items:flex-start;gap:12px;padding:17px 19px 13px;cursor:pointer}
-  .card .repo{font-family:var(--mono);font-size:13px;color:var(--muted)}
-  .card .title{font-weight:660;font-size:17.5px;letter-spacing:-.01em;margin-top:3px;text-wrap:balance;line-height:1.28}
-  .pill{font-size:12.5px;font-weight:700;padding:4px 11px;border-radius:20px;white-space:nowrap;font-family:var(--mono)}
-  .pill.claude{background:var(--claude-soft);color:var(--claude)} .pill.codex{background:var(--codex-soft);color:var(--codex)}
-  .pill.done{background:var(--done-soft);color:var(--done)} .pill.await{background:var(--await-soft);color:var(--await)} .pill.fail{background:var(--fail-soft);color:var(--fail)}
-  .stepper{display:flex;align-items:center;gap:0;padding:4px 19px 12px}
-  .node{width:16px;height:16px;border-radius:50%;border:2.5px solid var(--border-strong);background:var(--surface);flex:0 0 auto;z-index:1}
-  .node.k-claude.done{background:var(--claude);border-color:var(--claude)} .node.k-codex.done{background:var(--codex);border-color:var(--codex)} .node.k-neutral.done{background:var(--done);border-color:var(--done)}
-  .node.k-claude.active{border-color:var(--claude);box-shadow:0 0 0 4px var(--claude-soft)} .node.k-codex.active{border-color:var(--codex);box-shadow:0 0 0 4px var(--codex-soft)} .node.k-neutral.active{border-color:var(--muted);box-shadow:0 0 0 4px var(--surface-2)}
-  .node.fail{background:var(--fail);border-color:var(--fail)}
-  .conn{height:2.5px;flex:1 1 auto;background:var(--border);min-width:6px} .conn.done{background:var(--border-strong)}
-  .activity{display:flex;align-items:baseline;gap:9px;padding:0 19px 14px;font-size:14px;color:var(--muted);line-height:1.4}
-  .who{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px;flex:0 0 auto;letter-spacing:.02em}
-  .who.claude{background:var(--claude-soft);color:var(--claude)} .who.codex{background:var(--codex-soft);color:var(--codex)} .who.neutral{background:var(--surface-2);color:var(--muted)}
-  .hb{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
-  .hb.live{background:var(--live-soft);color:var(--live)} .hb.live .d{width:7px;height:7px;border-radius:50%;background:var(--live);animation:pulse 2s infinite}
-  .hb.stale{background:var(--await-soft);color:var(--await)} .hb.exited{background:var(--fail-soft);color:var(--fail)}
-  .pill.live{background:var(--live-soft);color:var(--live)} .pill.stale{background:var(--await-soft);color:var(--await)} .pill.dead{background:var(--fail-soft);color:var(--fail)} .pill.needs{background:var(--await-soft);color:var(--await)}
+  .card .head{display:flex;align-items:flex-start;gap:12px;padding:19px 22px 12px;cursor:pointer}
+  .card .repo{font-family:var(--mono);font-size:13px;color:var(--faint)}
+  .card .title{font-weight:680;font-size:19px;letter-spacing:-.015em;margin-top:3px;text-wrap:balance;line-height:1.25}
+  .pill{font-size:12.5px;font-weight:680;padding:5px 12px;border-radius:20px;white-space:nowrap;font-family:var(--mono)}
+  .pill.live{background:var(--live-soft);color:var(--live)}
   .pill.live .d{width:7px;height:7px;border-radius:50%;background:var(--live);display:inline-block;margin-right:6px;animation:pulse 2s infinite;vertical-align:middle}
-  .card.h-live{border-left-color:var(--live)} .card.h-needs{border-left-color:var(--await)}
-  .card.h-stale{border-left-color:var(--await);background:color-mix(in srgb,var(--await) 5%,var(--surface))}
-  .card.h-dead{border-left-color:var(--fail);background:color-mix(in srgb,var(--fail) 7%,var(--surface))}
-  .stat.live .n{color:var(--live)} .stat.stale .n{color:var(--await)} .stat.dead .n{color:var(--fail)}
-  .activity .act b{color:var(--ink);font-weight:660} .activity .act{min-width:0}
-  .meta{display:flex;gap:24px;padding:0 19px 15px;flex-wrap:wrap}
-  .meta .cell .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:18px;font-weight:640;margin-top:2px}
-  .meta .cell .v.small{font-size:15px;font-weight:560;color:var(--muted)}
-  .chips{display:flex;gap:8px;flex-wrap:wrap;padding:0 19px 17px}
-  .chip{font-family:var(--mono);font-size:12.5px;padding:4px 10px;border-radius:7px;background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
-  .chip.exec{color:var(--codex);border-color:color-mix(in srgb,var(--codex) 30%,var(--border))}
-  .chip.plan{color:var(--claude);border-color:color-mix(in srgb,var(--claude) 30%,var(--border))}
-  a.pr{color:var(--ink);text-decoration:none;font-family:var(--mono);font-size:13px;font-weight:640}
+  .pill.stale{background:var(--await-soft);color:var(--await)}
+  .pill.dead{background:var(--fail-soft);color:var(--fail)}
+  .pill.needs{background:var(--await-soft);color:var(--await)}
+  .pill.done{background:var(--done-soft);color:var(--done)}
+  .pill.handoff{background:var(--claude-soft);color:var(--claude)}
+  .pill.failed{background:var(--fail-soft);color:var(--fail)}
+  .caret{color:var(--faint);transition:transform .15s;margin-left:auto;flex:0 0 auto;padding-top:4px;font-size:15px}
+  .card.open .caret{transform:rotate(90deg)}
+
+  /* ── signature: the relay track ────────────────────────── */
+  .relay{display:flex;align-items:center;padding:8px 22px 14px}
+  .node{width:15px;height:15px;border-radius:50%;border:2.5px solid var(--border-strong);
+    background:var(--surface);flex:0 0 auto;z-index:1}
+  .node.k-claude.done{background:var(--claude);border-color:var(--claude)}
+  .node.k-codex.done{background:var(--codex);border-color:var(--codex)}
+  .node.k-neutral.done{background:var(--done);border-color:var(--done)}
+  .node.active{width:19px;height:19px;border-width:3px;background:var(--surface)}
+  .node.k-claude.active{border-color:var(--claude);box-shadow:0 0 0 4px var(--claude-soft);animation:nodepulse 2.2s infinite}
+  .node.k-codex.active{border-color:var(--codex);box-shadow:0 0 0 4px var(--codex-soft);animation:nodepulse 2.2s infinite}
+  .node.k-neutral.active{border-color:var(--muted);box-shadow:0 0 0 4px var(--surface-2)}
+  @keyframes nodepulse{0%,100%{transform:scale(1)}50%{transform:scale(1.12)}}
+  .node.fail{background:var(--fail);border-color:var(--fail)}
+  .seg{height:3px;flex:1 1 auto;background:var(--border);min-width:8px;border-radius:2px}
+  .seg.k-claude{background:color-mix(in srgb,var(--claude) 55%,var(--border))}
+  .seg.k-codex{background:color-mix(in srgb,var(--codex) 55%,var(--border))}
+  .seg.k-neutral{background:var(--border-strong)}
+
+  /* activity line */
+  .activity{display:flex;align-items:baseline;gap:10px;padding:0 22px 15px;font-size:14.5px;color:var(--muted);line-height:1.4}
+  .who{font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:7px;flex:0 0 auto;letter-spacing:.02em}
+  .who.claude{background:var(--claude-soft);color:var(--claude)}
+  .who.codex{background:var(--codex-soft);color:var(--codex)}
+  .who.neutral{background:var(--surface-2);color:var(--muted)}
+  .activity b{color:var(--ink);font-weight:660}
+  .stept{font-family:var(--mono);font-size:12.5px;color:var(--faint);white-space:nowrap}
+
+  .meta{display:flex;gap:28px;padding:2px 22px 16px;flex-wrap:wrap}
+  .meta .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:19px;font-weight:660;margin-top:3px}
+  .meta .v.small{font-size:15px;font-weight:560;color:var(--muted)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;padding:0 22px 19px}
+  .chip{font-family:var(--mono);font-size:12.5px;padding:4px 11px;border-radius:8px;
+    background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
+  .chip.exec{color:var(--codex);border-color:color-mix(in srgb,var(--codex) 28%,var(--border))}
+  .chip.plan{color:var(--claude);border-color:color-mix(in srgb,var(--claude) 28%,var(--border))}
+  a.pr{color:var(--ink);text-decoration:none;font-family:var(--mono);font-size:13px;font-weight:660;align-self:center}
   a.pr:hover{text-decoration:underline}
-  .gate{margin:0 19px 17px;background:var(--await-soft);border:1px solid color-mix(in srgb,var(--await) 40%,transparent);border-radius:11px;padding:14px 15px}
-  .gate .q{font-weight:620;font-size:15px;margin-bottom:11px;line-height:1.4}
+
+  /* gate */
+  .gate{margin:0 22px 19px;background:var(--await-soft);border:1px solid color-mix(in srgb,var(--await) 38%,transparent);
+    border-radius:12px;padding:15px 16px}
+  .gate .q{font-weight:630;font-size:15px;margin-bottom:12px;line-height:1.4}
   .gate .opts{display:flex;gap:9px;flex-wrap:wrap}
-  .btn{font-family:var(--sans);font-size:14px;font-weight:640;padding:9px 16px;border-radius:9px;border:1px solid var(--border-strong);background:var(--surface);color:var(--ink);cursor:pointer;transition:transform .06s,background .12s,border-color .12s}
-  .btn:hover{border-color:var(--await);background:var(--await-soft)} .btn:active{transform:translateY(1px)}
-  .btn.primary{background:var(--await);border-color:var(--await);color:#fff} .btn.primary:hover{filter:brightness(1.06)}
+  .btn{font-family:var(--sans);font-size:14px;font-weight:640;padding:9px 17px;border-radius:10px;
+    border:1px solid var(--border-strong);background:var(--surface);color:var(--ink);cursor:pointer;
+    transition:transform .06s,background .12s,border-color .12s}
+  .btn:hover{border-color:var(--await);background:var(--await-soft)}
+  .btn:active{transform:translateY(1px)}
+  .btn.primary{background:var(--await);border-color:var(--await);color:#fff}
+  .btn.primary:hover{filter:brightness(1.06)}
   .btn:focus-visible{outline:2px solid var(--await);outline-offset:2px}
-  .actions{display:flex;gap:8px;padding:0 19px 16px}
-  .btn.sm{font-size:12.5px;font-weight:640;padding:6px 13px;border-radius:8px}
-  .btn.restart{border-color:var(--live);color:var(--live)} .btn.restart:hover{background:var(--live-soft);border-color:var(--live)}
   .btn[disabled]{opacity:.6;cursor:default}
-  .answered{font-size:14px;color:var(--muted);padding:0 19px 16px;display:flex;align-items:center;gap:8px} .answered b{color:var(--ink);font-weight:620}
-  .detail{border-top:1px solid var(--border);padding:8px 19px 10px;background:var(--surface-2);display:none} .card.open .detail{display:block} .card.open .caret{transform:rotate(90deg)}
-  .caret{color:var(--faint);transition:transform .15s;margin-left:auto;flex:0 0 auto;padding-top:3px;font-size:15px}
-  .row{display:flex;gap:13px;padding:11px 0;border-bottom:1px solid var(--border)} .row:last-child{border-bottom:0}
-  .row .idx{font-family:var(--mono);color:var(--faint);font-size:13px;width:18px;flex:0 0 auto;padding-top:2px}
-  .row .stn{width:11px;height:11px;border-radius:50%;flex:0 0 auto;margin-top:5px;background:var(--border-strong)}
-  .row .stn.k-claude.done{background:var(--claude)} .row .stn.k-codex.done{background:var(--codex)} .row .stn.k-neutral.done{background:var(--done)}
-  .row .stn.k-claude.active{background:var(--claude)} .row .stn.k-codex.active{background:var(--codex)} .row .stn.fail{background:var(--fail)}
-  .row .name{font-weight:620;font-size:14.5px} .row .actor{font-family:var(--mono);font-size:12px;font-weight:600}
+  .answered{font-size:14px;color:var(--muted);padding:0 22px 17px;display:flex;align-items:center;gap:8px}
+  .answered b{color:var(--ink);font-weight:630}
+  .actions{display:flex;gap:8px;padding:0 22px 18px}
+  .btn.sm{font-size:12.5px;font-weight:640;padding:6px 14px;border-radius:9px}
+  .btn.restart{border-color:var(--live);color:var(--live)}
+  .btn.restart:hover{background:var(--live-soft);border-color:var(--live)}
+
+  /* ── expanded detail: 2-col on wide, time chips ────────── */
+  .detail{border-top:1px solid var(--border);padding:14px 22px 16px;background:var(--surface-2);display:none}
+  .card.open .detail{display:grid;grid-template-columns:1fr;gap:0 34px}
+  @media (min-width:900px){.card.open .detail{grid-template-columns:1fr 1fr}}
+  .row{display:flex;gap:13px;padding:10px 0;border-bottom:1px solid var(--border);align-items:flex-start}
+  .detail .row:nth-last-child(1){border-bottom:0}
+  @media (min-width:900px){.detail .row:nth-last-child(2){border-bottom:0}}
+  .row .idx{font-family:var(--mono);color:var(--faint);font-size:12.5px;width:14px;flex:0 0 auto;padding-top:3px}
+  .row .stn{width:11px;height:11px;border-radius:50%;flex:0 0 auto;margin-top:6px;background:var(--border-strong)}
+  .row .stn.k-claude.done,.row .stn.k-claude.active{background:var(--claude)}
+  .row .stn.k-codex.done,.row .stn.k-codex.active{background:var(--codex)}
+  .row .stn.k-neutral.done{background:var(--done)}
+  .row .stn.fail{background:var(--fail)}
+  .row .name{font-weight:630;font-size:14.5px}
+  .row .actor{font-family:var(--mono);font-size:11.5px;font-weight:620;margin-left:6px}
   .row .actor.claude{color:var(--claude)} .row .actor.codex{color:var(--codex)} .row .actor.neutral{color:var(--faint)}
-  .row .note{color:var(--muted);font-size:13.5px;margin-top:3px} .row .st{margin-left:auto;font-size:12px;font-family:var(--mono);color:var(--faint);flex:0 0 auto;padding-top:2px}
-  .foot{margin-top:34px;color:var(--faint);font-size:13px;text-align:center} .empty{color:var(--muted);font-size:14px;padding:6px 0 2px}
+  .row .note{color:var(--muted);font-size:13.5px;margin-top:2px}
+  .tchip{margin-left:auto;flex:0 0 auto;font-family:var(--mono);font-size:12px;color:var(--faint);
+    padding:2px 9px;border-radius:7px;background:var(--surface);border:1px solid var(--border);white-space:nowrap}
+  .tchip.on{color:var(--codex);border-color:color-mix(in srgb,var(--codex) 30%,var(--border));animation:tpulse 2.4s infinite}
+  .tchip.on.claude{color:var(--claude);border-color:color-mix(in srgb,var(--claude) 30%,var(--border))}
+  @keyframes tpulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+  .foot{margin-top:38px;color:var(--faint);font-size:12.5px;text-align:center;font-family:var(--mono)}
+  .empty{color:var(--muted);font-size:15px;padding:26px;background:var(--surface);border:1px dashed var(--border-strong);
+    border-radius:var(--r);text-align:center}
 </style>
 
 <div class="wrap">
   <header>
     <div>
-      <h1>orchestrate</h1>
-      <div class="sub">dual-brain runs on this machine · <span style="color:var(--claude);font-weight:600">Claude</span> plans &amp; reviews · <span style="color:var(--codex);font-weight:600">Codex</span> (gpt-5.6-sol) executes</div>
+      <h1>orchestrate<span class="tick">.</span></h1>
+      <div class="sub"><b class="c1">Claude</b> plans &amp; reviews · <b class="c2">Codex</b> (gpt-5.6-sol) executes · every run on this machine</div>
     </div>
-    <div class="live"><span class="dot"></span><span id="clock">connecting…</span></div>
+    <div class="clockline"><span class="dot"></span><span id="clock">connecting…</span></div>
   </header>
-  <div class="legend">
-    <span class="k"><span class="sw" style="background:var(--claude)"></span>Claude — plan / review</span>
-    <span class="k"><span class="sw" style="background:var(--codex)"></span>Codex — critique / code / fix</span>
-    <span class="k"><span class="sw" style="background:var(--done)"></span>done</span>
-  </div>
-  <div class="summary" id="summary"></div>
+
+  <div class="strip" id="strip"></div>
   <section id="needs" style="margin-bottom:30px"></section>
   <section id="active"></section>
-  <div class="foot mono">~/.orchestrate/runs · auto-refreshes · click a run to expand its pipeline</div>
+  <div class="foot">~/.orchestrate/runs · auto-refreshes · click a run for its full pipeline</div>
 </div>
 
 <script>
 let RUNS=[], open={}, localAnswered={};
-const kindOf=a=>/claude|opus|fable|sonnet/i.test(a||"")?"claude":/gpt|codex/i.test(a||"")?"codex":"neutral";
+const kindOf=a=>/claude|opus|fable|sonnet/i.test(a||"")?"claude":/gpt|codex|sol/i.test(a||"")?"codex":"neutral";
 const whoLabel=k=>k==="claude"?"Claude":k==="codex"?"Codex":"Driver";
 const safeUrl=u=>/^(https?:\/\/|#)/.test(u||"")?u:"#";
 const isAns=r=>r.answered||localAnswered[r.id];
 const ansChoice=r=>(r.answered&&r.answered.choice)||localAnswered[r.id];
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function ago(sec){const s=Math.max(0,Math.round(Date.now()/1000-sec));if(s<60)return s+"s ago";const m=Math.round(s/60);if(m<60)return m+"m ago";const h=Math.floor(m/60);return h+"h "+(m%60)+"m ago";}
 function dur(sec){const m=Math.max(0,Math.round((Date.now()/1000-sec)/60));if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
-const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function span(a,b){const s=Math.max(0,Math.round((b??Date.now()/1000)-a));if(s<60)return s+"s";const m=Math.round(s/60);if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 const curStep=r=>(r.steps||[]).find(s=>s.state==="active")||(r.steps||[]).slice().reverse().find(s=>s.state==="done")||(r.steps||[])[0];
-function hb(r){const h=r.health;if(!h||h==="done"||h==="waiting")return"";
-  const age=r.staleSecs!=null?r.staleSecs:Math.max(0,Math.round(Date.now()/1000-(r.updatedAt||0)));
-  const a=age<60?age+"s":age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
-  if(h==="live")return `<span class="hb live"><span class="d"></span>live</span>`;
-  if(h==="stale")return `<span class="hb stale" title="no update for ${a}">⚠ stalled · ${a}</span>`;
-  if(h==="exited")return `<span class="hb exited" title="worker process is gone">■ exited</span>`;
-  return"";}
+const isTerminal=r=>["done","failed","fail"].includes(r.status);
+const isGateOpen=r=>r.gate&&!isAns(r);
 
-function stepper(r){let h='<div class="stepper">';(r.steps||[]).forEach((s,i)=>{
-  const st=s.state==="done"?"done":s.state==="active"?"active":s.state==="fail"?"fail":"";
-  h+=`<span class="node k-${kindOf(s.actor)} ${st}" title="${esc(s.name)} · ${esc(s.actor)}"></span>`;
-  if(i<r.steps.length-1)h+=`<span class="conn ${r.steps[i].state==='done'?'done':''}"></span>`;});return h+'</div>';}
-function detail(r){let h='<div class="detail">';(r.steps||[]).forEach(s=>{const k=kindOf(s.actor);
-  h+=`<div class="row"><span class="idx">${s.n}</span><span class="stn k-${k} ${s.state}"></span>
-    <div><div class="name">${esc(s.name)} <span class="actor ${k}">${esc(s.actor)}</span></div>
-    ${s.note?`<div class="note">${esc(s.note)}</div>`:''}</div><span class="st">${esc(s.state)}</span></div>`;});return h+'</div>';}
+function healthOf(r){
+  if(r.health) return r.health==="exited"?"exited":r.health;    // server truth wins
+  return "live";
+}
+function stateOf(r){ // one visual state per card: done|failed|needs|handoff|dead|stale|live
+  if(r.status==="done")return"done";
+  if(r.status==="failed"||r.status==="fail")return"failed";
+  if(isGateOpen(r))return"needs";
+  if(r.status==="handoff"||healthOf(r)==="handoff")return"handoff";
+  const h=healthOf(r);
+  return h==="exited"?"dead":h==="stale"?"stale":"live";
+}
+
+/* signature: relay track — segments carry the color of the leg they lead into */
+function relay(r){
+  let h='<div class="relay">';
+  (r.steps||[]).forEach((s,i)=>{
+    const st=s.state==="done"?"done":s.state==="active"?"active":s.state==="fail"?"fail":"";
+    h+=`<span class="node k-${kindOf(s.actor)} ${st}" title="${esc(s.name)} · ${esc(s.actor)}"></span>`;
+    if(i<r.steps.length-1){
+      const next=r.steps[i+1];
+      const reached=s.state==="done";   // leg is colored once the baton has passed it
+      h+=`<span class="seg ${reached?("k-"+kindOf(next.actor)):""}"></span>`;
+    }
+  });
+  return h+'</div>';
+}
+function detail(r){
+  let h='<div class="detail">';
+  (r.steps||[]).forEach(s=>{
+    const k=kindOf(s.actor);
+    let t="";
+    if(s.state==="active"&&s.startedAt) t=`<span class="tchip on ${k==="claude"?"claude":""}">${span(s.startedAt)}…</span>`;
+    else if(s.state==="done"&&s.startedAt&&s.endedAt) t=`<span class="tchip">${span(s.startedAt,s.endedAt)}</span>`;
+    else if(s.state==="fail") t=`<span class="tchip" style="color:var(--fail)">failed</span>`;
+    h+=`<div class="row"><span class="idx">${s.n}</span><span class="stn k-${k} ${s.state}"></span>
+      <div style="min-width:0"><div class="name">${esc(s.name)}<span class="actor ${k}">${esc(s.actor)}</span></div>
+      ${s.note?`<div class="note">${esc(s.note)}</div>`:''}</div>${t}</div>`;
+  });
+  return h+'</div>';
+}
 function card(r){
-  const cur=curStep(r), ck=cur?kindOf(cur.actor):"neutral";
-  const h=r.health||"live";
+  const st=stateOf(r), cur=curStep(r), ck=cur?kindOf(cur.actor):"neutral";
   const age=r.staleSecs!=null?r.staleSecs:Math.max(0,Math.round(Date.now()/1000-(r.updatedAt||0)));
   const aStr=age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
-  const cls=r.status==="done"?"":(r.gate&&!isAns(r))?"h-needs":h==="stale"?"h-stale":h==="exited"?"h-dead":"h-live";
-  let pill;
-  if(r.status==="done") pill=`<span class="pill done">merged ✓</span>`;
-  else if(r.gate&&!isAns(r)) pill=`<span class="pill needs">needs you</span>`;
-  else if(h==="exited") pill=`<span class="pill dead">■ not running</span>`;
-  else if(h==="stale") pill=`<span class="pill stale">⚠ stalled · ${aStr}</span>`;
-  else pill=`<span class="pill live"><span class="d"></span>running</span>`;
-  const m=r.metrics||{}, prTxt=r.pr?`#${r.pr.number} ${String(r.pr.state||"").toLowerCase()}`:"no PR yet";
+  const pills={done:'<span class="pill done">merged ✓</span>',failed:'<span class="pill failed">failed</span>',
+    needs:'<span class="pill needs">needs you</span>',handoff:'<span class="pill handoff">with Claude · review</span>',
+    dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled · ${aStr}</span>`,
+    live:'<span class="pill live"><span class="d"></span>running</span>'};
+  const m=r.metrics||{};
+  const prTxt=r.pr?esc(`#${r.pr.number} ${String(r.pr.state||"").toLowerCase()}`):"no PR yet";
   let activity="";
-  if(cur && r.status!=="done" && !(r.gate&&!isAns(r))){
-    activity=`<div class="activity"><span class="who ${ck}">${whoLabel(ck)}</span><span class="act"><b>${esc(cur.name)}</b>${cur.note?` — ${esc(cur.note)}`:""}</span></div>`;
+  if(cur&&st!=="done"&&st!=="failed"&&st!=="needs"){
+    const t=(cur.state==="active"&&cur.startedAt)?`<span class="stept">· ${span(cur.startedAt)} in step</span>`:"";
+    activity=`<div class="activity"><span class="who ${ck}">${whoLabel(ck)}</span>
+      <span style="min-width:0"><b>${esc(cur.name)}</b>${cur.note?` — ${esc(cur.note)}`:""} ${t}</span></div>`;
   }
   let gate="";
-  if(r.gate&&!isAns(r)){gate=`<div class="gate"><div class="q">${esc(r.gate.question)}</div><div class="opts">`+
+  if(isGateOpen(r)){gate=`<div class="gate"><div class="q">${esc(r.gate.question)}</div><div class="opts">`+
     (r.gate.options||[]).map(o=>`<button class="btn ${o.primary?'primary':''}" data-ans="${esc(r.id)}" data-choice="${esc(o.label)}">${esc(o.label)}</button>`).join("")+`</div></div>`;}
-  else if(isAns(r)){gate=`<div class="answered">✓ You chose <b>${esc(ansChoice(r))}</b> — sent to the run</div>`;}
+  else if(isAns(r)&&r.gate!==undefined&&ansChoice(r)){gate=`<div class="answered">✓ You chose <b>${esc(ansChoice(r))}</b> — sent to the run</div>`;}
   let actions="";
-  if((h==="stale"||h==="exited") && r.status!=="done" && !(r.gate&&!isAns(r))){
-    actions=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;
-  }
-  return `<div class="card ${cls} ${open[r.id]?'open':''}" data-id="${esc(r.id)}">
+  if(["stale","dead","failed"].includes(st)){actions=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;}
+  const edge={done:"var(--done)",failed:"var(--fail)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
+  return `<div class="card ${open[r.id]?'open':''}" data-id="${esc(r.id)}" style="border-left:4px solid ${edge}">
     <div class="head" data-toggle="${esc(r.id)}">
       <div style="min-width:0"><div class="repo">${esc(r.repo)} · ${esc(r.branch)}</div><div class="title">${esc(r.title)}</div></div>
-      ${pill}<span class="caret">▸</span></div>
-    ${stepper(r)}
+      ${pills[st]}<span class="caret">▸</span></div>
+    ${relay(r)}
     ${activity}
     <div class="meta">
-      <div class="cell"><div class="lbl">step</div><div class="v">${r.step||0}/7</div></div>
-      <div class="cell"><div class="lbl">elapsed</div><div class="v">${r.startedAt?dur(r.startedAt):"—"}</div></div>
-      <div class="cell"><div class="lbl">updated</div><div class="v small">${r.updatedAt?ago(r.updatedAt):"—"}</div></div>
-      <div class="cell"><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div></div>
+      <div><div class="lbl">step</div><div class="v">${r.step||0}/7</div></div>
+      <div><div class="lbl">elapsed</div><div class="v">${r.startedAt?dur(r.startedAt):"—"}</div></div>
+      <div><div class="lbl">updated</div><div class="v small">${r.updatedAt?ago(r.updatedAt):"—"}</div></div>
+      <div><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div></div>
     <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.6-sol")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
       ${r.pr?`<a class="pr" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">${prTxt} ↗</a>`:`<span class="chip">${prTxt}</span>`}</div>
     ${gate}${actions}${detail(r)}</div>`;
 }
 function render(){
-  const needs=RUNS.filter(r=>r.gate&&!isAns(r)), rest=RUNS.filter(r=>!(r.gate&&!isAns(r)));
-  const activeRuns=RUNS.filter(r=>r.status!=="done" && !(r.gate&&!isAns(r)));
-  const byH=h=>activeRuns.filter(r=>(r.health||"live")===h).length;
-  const nLive=byH("live"), nStale=byH("stale"), nDead=byH("exited"), nAwait=needs.length, nDone=RUNS.filter(r=>r.status==="done").length;
-  document.getElementById("summary").innerHTML=
-    `<div class="stat live"><div class="n">${nLive}</div><div class="k lbl">live</div></div>
-     <div class="stat stale"><div class="n">${nStale}</div><div class="k lbl">stalled</div></div>`+
-    (nDead?`<div class="stat dead"><div class="n">${nDead}</div><div class="k lbl">not running</div></div>`:"")+
-    `<div class="stat await"><div class="n">${nAwait}</div><div class="k lbl">need you</div></div>
-     <div class="stat done"><div class="n">${nDone}</div><div class="k lbl">done</div></div>`;
+  const needs=RUNS.filter(isGateOpen), rest=RUNS.filter(r=>!isGateOpen(r));
+  const states=RUNS.map(stateOf);
+  const cnt=s=>states.filter(x=>x===s).length;
+  const chips=[];
+  if(cnt("needs"))chips.push(`<span class="schip needs"><span class="n">${cnt("needs")}</span> need you</span>`);
+  if(cnt("dead")+cnt("failed"))chips.push(`<span class="schip dead"><span class="n">${cnt("dead")+cnt("failed")}</span> not running</span>`);
+  if(cnt("stale"))chips.push(`<span class="schip stale"><span class="n">${cnt("stale")}</span> stalled</span>`);
+  if(cnt("live"))chips.push(`<span class="schip liv"><span class="d"></span><span class="n">${cnt("live")}</span> live</span>`);
+  if(cnt("handoff"))chips.push(`<span class="schip claude"><span class="n">${cnt("handoff")}</span> with claude</span>`);
+  if(cnt("done"))chips.push(`<span class="schip"><span class="n">${cnt("done")}</span> done</span>`);
+  document.getElementById("strip").innerHTML=chips.join("")||"";
   const needsEl=document.getElementById("needs");
-  if(nAwait){needsEl.innerHTML=`<h2>Needs you <span class="count-pill">${nAwait}</span></h2><div class="grid">`+needs.map(card).join("")+`</div>`;needsEl.style.display="";}
+  if(needs.length){needsEl.innerHTML=`<h2>needs you <span class="count-pill">${needs.length}</span></h2><div class="grid">`+needs.map(card).join("")+`</div>`;needsEl.style.display="";}
   else needsEl.style.display="none";
-  document.getElementById("active").innerHTML=`<h2>All runs <span class="count-pill">${rest.length}</span></h2>`+
-    (rest.length?`<div class="grid">`+rest.map(card).join("")+`</div>`:`<div class="empty">No runs yet. Start one with <span class="mono">/orchestrate &lt;topic&gt;</span>.</div>`);
+  document.getElementById("active").innerHTML=
+    (needs.length?`<h2>all runs <span class="count-pill">${rest.length}</span></h2>`:"")+
+    (rest.length?`<div class="grid">`+rest.map(card).join("")+`</div>`:
+     RUNS.length?"":`<div class="empty">No runs yet. Start one with <span class="mono">/orchestrate &lt;topic&gt;</span> — it will appear here live.</div>`);
 }
 document.addEventListener("click",async e=>{
   const ans=e.target.closest("[data-ans]");
@@ -232,13 +317,16 @@ document.addEventListener("click",async e=>{
       if(!res.ok){const j=await res.json().catch(()=>({}));rst.textContent="✕ can't restart";rst.title=j.error||"";}}
     catch(_){rst.textContent="✕ failed";}
     setTimeout(load,1200);return;}
-  const tog=e.target.closest("[data-toggle]"); if(tog){open[tog.dataset.toggle]=!open[tog.dataset.toggle];render();}
+  const tog=e.target.closest("[data-toggle]");
+  if(tog){open[tog.dataset.toggle]=!open[tog.dataset.toggle];render();}
 });
 async function load(){
   try{const res=await fetch("/api/runs",{cache:"no-store"});RUNS=await res.json();
-    RUNS.sort((a,b)=>(a.gate&&!isAns(a)?0:1)-(b.gate&&!isAns(b)?0:1)||(b.updatedAt||0)-(a.updatedAt||0));
+    const rank=r=>isGateOpen(r)?0:["dead","failed","stale"].includes(stateOf(r))?1:stateOf(r)==="live"?2:stateOf(r)==="handoff"?3:4;
+    RUNS.sort((a,b)=>rank(a)-rank(b)||(b.updatedAt||0)-(a.updatedAt||0));
     render();document.getElementById("clock").textContent="updated "+new Date().toLocaleTimeString();}
   catch(e){document.getElementById("clock").textContent="dashboard offline";}
 }
 load();setInterval(load,4000);
+setInterval(render,15000);  // re-tick relative times even without new data
 </script>

@@ -91,6 +91,12 @@ def main():
     elif a.cmd == "step":
         r = need(a.id); i = a.n - 1
         if not (0 <= i < 7): sys.exit("--n must be 1..7")
+        now = int(time.time())
+        prev = r["steps"][i].get("state")
+        if a.state == "active" and prev != "active":
+            r["steps"][i]["startedAt"] = now
+        elif a.state in ("done", "fail") and prev == "active":
+            r["steps"][i]["endedAt"] = now
         r["steps"][i]["state"] = a.state
         if a.note is not None: r["steps"][i]["note"] = a.note
         if a.actor: r["steps"][i]["actor"] = a.actor
