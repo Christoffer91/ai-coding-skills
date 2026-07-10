@@ -4,7 +4,7 @@
 # Automates steps 2–4: critique -> branch -> implement -> open PR. It then
 # records a handoff and stops. Steps 5–7 run in a Claude session.
 #
-# Usage: scripts/orchestrate.sh <topic> [path/to/PLAN.md]
+# Usage: scripts/orchestrate.sh [--resume] [--timeout SECONDS] <topic> [path/to/PLAN.md]
 #
 # Env:
 #   ORCH_SANDBOX      Codex sandbox for implementation (default workspace-write)
@@ -13,13 +13,27 @@
 #   ORCH_STALL_KILL   seconds without Codex output before retry (default 300)
 #   ORCH_MAX_RETRY    retry count after a hung step (default 2)
 #   ORCH_TITLE        dashboard card title (default topic)
+#   ORCH_GATE_TIMEOUT seconds to wait for a gate; 0 waits forever (default 0)
 #   ORCH_DRYRUN=1     print the command plan without writes, auth, fetch, or emit
 set -Eeuo pipefail
 
 die() { echo "orchestrate: $*" >&2; exit 1; }
 
+RESUME=0
+GATE_TIMEOUT="${ORCH_GATE_TIMEOUT:-0}"
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --resume) RESUME=1; shift ;;
+    --timeout)
+      [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--timeout requires a non-negative integer"
+      GATE_TIMEOUT="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
 TOPIC="${1:-}"
-[[ -n "$TOPIC" ]] || die "usage: orchestrate.sh <topic> [PLAN.md]"
+[[ -n "$TOPIC" ]] || die "usage: orchestrate.sh [--resume] [--timeout SECONDS] <topic> [PLAN.md]"
 [[ "$TOPIC" =~ ^[a-z0-9][a-z0-9._-]{0,60}$ ]] || \
   die "invalid topic '$TOPIC' (use 1-61 lowercase letters, digits, dot, underscore, or hyphen)"
 
@@ -47,6 +61,28 @@ SELF_REL=""
 REPO_NAME="${ORCH_REPO_NAME:-$(basename "$ORIG_ROOT")}"
 BATON_ROOT="${ORCH_BATON_ROOT:-$ORIG_ROOT}"
 RUN_ID="${ORCH_RUN_ID:-$REPO_NAME-$TOPIC}"
+
+if [[ "$RESUME" == "1" && -z "${ORCH_RUN_ID:-}" ]]; then
+  resolved_id="$(python3 - "$HOME/.orchestrate/runs" "$TOPIC" "$(pwd -P)" <<'PY'
+import glob, json, os, sys
+matches = []
+for candidate in glob.glob(os.path.join(sys.argv[1], "*.json")):
+    try:
+        with open(candidate) as fh:
+            run = json.load(fh)
+    except Exception:
+        continue
+    if run.get("topic") == sys.argv[2] and run.get("cwd") == sys.argv[3]:
+        matches.append(run.get("id", ""))
+if len(matches) == 1:
+    print(matches[0])
+PY
+  )"
+  [[ -n "$resolved_id" ]] || die "could not resolve one resumable '$TOPIC' run for $(pwd -P); run from its recorded cwd or set ORCH_RUN_ID"
+  RUN_ID="$resolved_id"
+fi
+[[ "$RUN_ID" != */* && "$RUN_ID" != *\\* && "$RUN_ID" != "." && "$RUN_ID" != ".." && \
+   "$RUN_ID" != *$'\n'* && "$RUN_ID" != *$'\r'* ]] || die "invalid ORCH_RUN_ID: path separators and traversal are not allowed"
 
 local_base() {
   local base
@@ -85,26 +121,87 @@ is_linked_worktree() {
 }
 
 RUN_FILE="$HOME/.orchestrate/runs/$RUN_ID.json"
+existing_status=""
+existing_pid=""
+existing_checkpoint=""
 if [[ -f "$RUN_FILE" ]]; then
-  read -r existing_status existing_pid < <(python3 - "$RUN_FILE" <<'PY'
+  existing_status="$(python3 - "$RUN_FILE" <<'PY'
 import json, sys
 try:
     with open(sys.argv[1]) as fh:
         run = json.load(fh)
-    print(run.get("status", ""), run.get("pid") or "")
+    print(run.get("status", ""))
 except Exception:
-    print("", "")
+    print("")
 PY
-  )
-  if [[ "$existing_status" == "running" || "$existing_status" == "review" ]]; then
+  )"
+  existing_pid="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        print(json.load(fh).get("pid") or "")
+except Exception:
+    print("")
+PY
+  )"
+  existing_checkpoint="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        print((json.load(fh).get("checkpoint") or {}).get("name", ""))
+except Exception:
+    print("")
+PY
+  )"
+  if [[ "$RESUME" != "1" && ( "$existing_checkpoint" == "awaiting_approval" || "$existing_checkpoint" == "approval_granted" ) ]]; then
+    die "run '$RUN_ID' has a pending push/PR continuation — use --resume from its recorded cwd"
+  fi
+  if [[ "$RESUME" != "1" && ( "$existing_status" == "running" || "$existing_status" == "review" ) ]]; then
     if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
       die "run '$RUN_ID' already live — finish or kill it first"
     fi
   fi
 fi
 
+if [[ "$RESUME" == "1" ]]; then
+  [[ -f "$RUN_FILE" ]] || die "no run record found for '$RUN_ID'"
+  [[ "$existing_checkpoint" == "awaiting_approval" || "$existing_checkpoint" == "approval_granted" ]] || \
+    die "run '$RUN_ID' has no resumable push/PR checkpoint"
+fi
+
 MADE_BRANCH=0
-if [[ "$RESTART" == "1" ]]; then
+if [[ "$RESUME" == "1" ]]; then
+  recorded_cwd="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    print(json.load(fh).get("cwd", ""))
+PY
+  )"
+  recorded_branch="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    print(json.load(fh).get("branch", ""))
+PY
+  )"
+  recorded_worktree="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    print("1" if (json.load(fh).get("restart") or {}).get("dedicatedWorktree") else "0")
+PY
+  )"
+  recorded_baton_root="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    run = json.load(fh)
+print(((run.get("restart") or {}).get("env") or {}).get("ORCH_BATON_ROOT", ""))
+PY
+  )"
+  [[ "$(pwd -P)" == "$recorded_cwd" ]] || die "resume must run from recorded cwd: $recorded_cwd"
+  [[ "$(git branch --show-current)" == "$recorded_branch" ]] || die "resume expected branch '$recorded_branch'"
+  DEDICATED_WORKTREE="$recorded_worktree"
+  [[ -z "$recorded_baton_root" ]] || BATON_ROOT="$recorded_baton_root"
+  MADE_BRANCH=1
+elif [[ "$RESTART" == "1" ]]; then
   [[ "$DEDICATED_WORKTREE" == "1" ]] || die "automatic restart is allowed only in a recorded dedicated worktree"
   is_linked_worktree || die "automatic restart refused: current directory is not a linked worktree"
   [[ "$(git branch --show-current)" == "$BRANCH" ]] || \
@@ -129,7 +226,7 @@ fi
 
 STATUS_BIN=""
 for candidate in "$(dirname "$SELF")/../dashboard/orchestrate-status" \
-                 "$(dirname "$SELF")/../skills/claude/skills/orchestrate/dashboard/orchestrate-status" \
+                 "$(dirname "$SELF")/../skills/orchestrate/dashboard/orchestrate-status" \
                  "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status"; do
   [[ -x "$candidate" ]] && { STATUS_BIN="$candidate"; break; }
 done
@@ -142,7 +239,7 @@ DRIVER_START="$(proc_start $$ || true)"
 DRIVER_PGID="$(proc_pgid $$ || true)"
 START_ARGS=(start --id "$RUN_ID" --repo "$REPO_NAME" --topic "$TOPIC"
   --title "${ORCH_TITLE:-$TOPIC}" --branch "$BRANCH" --pid "$$"
-  --cwd "$(pwd -P)" --driver "$SELF" --plan "$PLAN_ABS")
+  --cwd "$(pwd -P)" --repo-root "$ORIG_ROOT" --driver "$SELF" --plan "$PLAN_ABS")
 [[ -n "$DRIVER_START" ]] && START_ARGS+=(--pid-start "$DRIVER_START")
 [[ "$DRIVER_PGID" =~ ^[0-9]+$ ]] && START_ARGS+=(--pgid "$DRIVER_PGID")
 [[ "$DEDICATED_WORKTREE" == "1" ]] && START_ARGS+=(--worktree)
@@ -154,7 +251,11 @@ START_ARGS+=(--env "ORCH_SANDBOX=$SANDBOX"
   --env "ORCH_RUN_ID=$RUN_ID"
   --env "ORCH_REPO_NAME=$REPO_NAME"
   --env "ORCH_BATON_ROOT=$BATON_ROOT")
-emit "${START_ARGS[@]}"
+if [[ "$RESUME" == "1" ]]; then
+  emit heartbeat --id "$RUN_ID" --pid "$$"
+else
+  emit "${START_ARGS[@]}"
+fi
 
 FAIL_TRAP_ARMED=1
 CURRENT_STEP=1
@@ -168,7 +269,7 @@ on_exit() {
   exit "$rc"
 }
 trap on_exit EXIT
-emit step --id "$RUN_ID" --n 1 --state done
+[[ "$RESUME" == "1" ]] || emit step --id "$RUN_ID" --n 1 --state done
 
 LAST_SESSION_ID=""
 capture_session() {
@@ -234,50 +335,117 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n>
   done
 }
 
-echo "== orchestrate: $TOPIC =="
-echo "   plan=$PLAN  branch=$BRANCH  base=$BASE  sandbox=$SANDBOX  effort=$EXEC_EFFORT  worktree=$DEDICATED_WORKTREE"
+ARTIFACT_DIR="$HOME/.orchestrate/artifacts/$RUN_ID"
+mkdir -p "$ARTIFACT_DIR"
+CRIT="$ARTIFACT_DIR/critique.md"
+IMPL="$ARTIFACT_DIR/implementation.md"
 
-CURRENT_STEP=2
-echo "-- [2/4] Codex critiques the plan (read-only)"
-emit step --id "$RUN_ID" --n 2 --state active
-CRIT="$(mktemp -t orch-critique-XXXX).md"
-CPROMPT="$(mktemp -t orch-cprompt-XXXX).md"
-{
-  printf 'You are an elite engineer. Critique this plan for a change in %s: risks, wrong assumptions, missing edge cases, simpler approaches, and anything that would make a reviewer reject the PR. Be specific and terse. Plan follows:\n\n' "$(pwd)"
-  cat "$PLAN"
-} > "$CPROMPT"
-codex_run "$CPROMPT" "$CRIT" read-only "" 2 || die "critique step failed (see log above)"
-echo "   critique -> $CRIT"
+if [[ "$RESUME" != "1" ]]; then
+  echo "== orchestrate: $TOPIC =="
+  echo "   plan=$PLAN  branch=$BRANCH  base=$BASE  sandbox=$SANDBOX  effort=$EXEC_EFFORT  worktree=$DEDICATED_WORKTREE"
 
-CURRENT_STEP=3
-emit step --id "$RUN_ID" --n 2 --state done
-echo "-- [3/4] Codex implements on $BRANCH (sandbox=$SANDBOX, effort=$EXEC_EFFORT, no network)"
-emit step --id "$RUN_ID" --n 3 --state active
-if [[ "$MADE_BRANCH" != "1" ]]; then
-  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-    git switch "$BRANCH"
-  else
-    git switch -c "$BRANCH"
+  CURRENT_STEP=2
+  echo "-- [2/4] Codex critiques the plan (read-only)"
+  emit step --id "$RUN_ID" --n 2 --state active
+  CPROMPT="$(mktemp -t orch-cprompt-XXXX).md"
+  {
+    printf 'You are an elite engineer. Critique this plan for a change in %s: risks, wrong assumptions, missing edge cases, simpler approaches, and anything that would make a reviewer reject the PR. Be specific and terse. Plan follows:\n\n' "$(pwd)"
+    cat "$PLAN"
+  } > "$CPROMPT"
+  codex_run "$CPROMPT" "$CRIT" read-only "" 2 || die "critique step failed (see log above)"
+  echo "   critique -> $CRIT"
+
+  CURRENT_STEP=3
+  emit step --id "$RUN_ID" --n 2 --state done
+  echo "-- [3/4] Codex implements on $BRANCH (sandbox=$SANDBOX, effort=$EXEC_EFFORT, no network)"
+  emit step --id "$RUN_ID" --n 3 --state active
+  if [[ "$MADE_BRANCH" != "1" ]]; then
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      git switch "$BRANCH"
+    else
+      git switch -c "$BRANCH"
+    fi
   fi
-fi
-BEFORE="$(git rev-parse HEAD 2>/dev/null || true)"
-IMPL="$(mktemp -t orch-impl-XXXX).md"
-IPROMPT="$(mktemp -t orch-iprompt-XXXX).md"
-if [[ "$DEDICATED_WORKTREE" == "1" ]]; then
-  printf 'Implement the plan in %s on the current branch (%s). Consider the critique at %s. Run the project'"'"'s tests/lint/build until green. Do NOT stage or commit: this linked worktree'"'"'s git metadata is outside your sandbox, so the driver will commit after you finish. Do NOT push and do NOT open a PR. End your response with a one-line summary suitable for use as the commit subject.\n' "$PLAN" "$BRANCH" "$CRIT" > "$IPROMPT"
+  BEFORE="$(git rev-parse HEAD 2>/dev/null || true)"
+  IPROMPT="$(mktemp -t orch-iprompt-XXXX).md"
+  if [[ "$DEDICATED_WORKTREE" == "1" ]]; then
+    printf 'Implement the plan in %s on the current branch (%s). Consider the critique at %s. Run the project'"'"'s tests/lint/build until green. Do NOT stage or commit: this linked worktree'"'"'s git metadata is outside your sandbox, so the driver will commit after you finish. For any gated action, stop and emit "⛔ APPROVAL-REQUEST: <action> — <why>". Do NOT push and do NOT open a PR. End your response with a one-line summary suitable for use as the commit subject.\n' "$PLAN" "$BRANCH" "$CRIT" > "$IPROMPT"
+  else
+    printf 'Implement the plan in %s on the current branch (%s). Consider the critique at %s. Run the project'"'"'s tests/lint/build until green. Then stage and git commit with a clear message. For any gated action, stop and emit "⛔ APPROVAL-REQUEST: <action> — <why>". Do NOT push and do NOT open a PR — the sandbox has no network; the driver handles that. Summarize what you changed on the last line.\n' "$PLAN" "$BRANCH" "$CRIT" > "$IPROMPT"
+  fi
+  codex_run "$IPROMPT" "$IMPL" "$SANDBOX" "$EXEC_EFFORT" 3 || die "implement step failed"
+  IMPL_SESSION_ID="$LAST_SESSION_ID"
+  [[ -n "$IMPL_SESSION_ID" ]] || die "implementation completed but no Codex session id was captured"
 else
-  printf 'Implement the plan in %s on the current branch (%s). Consider the critique at %s. Run the project'"'"'s tests/lint/build until green. Then stage and git commit with a clear message. Do NOT push and do NOT open a PR — the sandbox has no network; the driver handles that. Summarize what you changed on the last line.\n' "$PLAN" "$BRANCH" "$CRIT" > "$IPROMPT"
+  echo "== orchestrate: resuming approval for $TOPIC =="
+  IMPL_SESSION_ID="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    print((json.load(fh).get("metrics") or {}).get("session", ""))
+PY
+  )"
+  [[ -n "$IMPL_SESSION_ID" ]] || die "run record has no implementation session"
+  [[ -f "$IMPL" ]] || die "implementation artifact missing: $IMPL"
+  BEFORE="$(git merge-base HEAD "origin/$BASE" 2>/dev/null || git rev-parse HEAD)"
 fi
-codex_run "$IPROMPT" "$IMPL" "$SANDBOX" "$EXEC_EFFORT" 3 || die "implement step failed"
-IMPL_SESSION_ID="$LAST_SESSION_ID"
-[[ -n "$IMPL_SESSION_ID" ]] || die "implementation completed but no Codex session id was captured"
+
+APPROVAL_REQUEST="$(sed -n 's/^⛔ APPROVAL-REQUEST:[[:space:]]*//p' "$IMPL" | head -1)"
+if [[ "$RESUME" != "1" && -n "$APPROVAL_REQUEST" ]]; then
+  APPROVAL_REQUEST="${APPROVAL_REQUEST:0:500}"
+  [[ -n "$STATUS_BIN" ]] || die "approval requested but orchestrate-status is unavailable"
+  python3 "$STATUS_BIN" gate --id "$RUN_ID" --kind approval \
+    --checkpoint awaiting_approval --continuation push_pr \
+    --question "$APPROVAL_REQUEST" \
+    --option "Approve and continue:primary" --option "Reject and stop" >/dev/null || \
+    die "could not persist approval gate"
+fi
+
+if [[ "$RESUME" == "1" || -n "$APPROVAL_REQUEST" ]]; then
+  [[ -n "$STATUS_BIN" ]] || die "approval requested but orchestrate-status is unavailable"
+  saved_choice="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    print((json.load(fh).get("lastGateAnswer") or {}).get("choice", ""))
+PY
+  )"
+  if [[ "$existing_checkpoint" == "approval_granted" ]]; then
+    choice="Approve and continue"
+  elif [[ "$saved_choice" == "Approve and continue" ]]; then
+    choice="$saved_choice"
+  elif choice="$(python3 "$STATUS_BIN" wait --id "$RUN_ID" --timeout "$GATE_TIMEOUT")"; then
+    :
+  else
+    wait_rc=$?
+    if [[ "$wait_rc" -eq 2 ]]; then
+      emit pause --id "$RUN_ID"
+      FAIL_TRAP_ARMED=0
+      echo "orchestrate: approval timed out; gate preserved. Resume from this cwd with: $SELF --resume --timeout 0 $TOPIC $PLAN" >&2
+      exit 2
+    fi
+    die "approval wait failed"
+  fi
+  if [[ "$choice" == "Reject and stop" ]]; then
+    emit cancel --id "$RUN_ID" --reason "approval rejected: ${APPROVAL_REQUEST:-requested action}"
+    FAIL_TRAP_ARMED=0
+    echo "orchestrate: approval rejected; push/PR skipped" >&2
+    exit 3
+  fi
+  [[ "$choice" == "Approve and continue" ]] || die "unexpected approval choice: $choice"
+  python3 "$STATUS_BIN" checkpoint --id "$RUN_ID" --name approval_granted \
+    --continuation push_pr >/dev/null || die "could not persist approved continuation"
+fi
 if [[ "$DEDICATED_WORKTREE" == "1" ]]; then
   COMMIT_SUBJECT="$(awk 'NF { line=$0 } END { print line }' "$IMPL" | tr -d '\r')"
   [[ -n "$COMMIT_SUBJECT" ]] || COMMIT_SUBJECT="orchestrate: $TOPIC"
   COMMIT_SUBJECT="${COMMIT_SUBJECT:0:200}"
   git add -A -- ':!PLAN-*.md' || die "driver could not stage worktree changes"
-  git diff --cached --quiet && die "Codex changed nothing in the worktree (see $IMPL) — aborting."
-  git commit -m "$COMMIT_SUBJECT" || die "driver could not commit worktree changes"
+  if git diff --cached --quiet; then
+    ALREADY_AHEAD="$(git rev-list --count "origin/$BASE..HEAD" 2>/dev/null || echo 0)"
+    [[ "$RESUME" == "1" && "$ALREADY_AHEAD" -ge 1 ]] || \
+      die "Codex changed nothing in the worktree (see $IMPL) — aborting."
+  else
+    git commit -m "$COMMIT_SUBJECT" || die "driver could not commit worktree changes"
+  fi
 fi
 
 CURRENT_STEP=4
@@ -319,10 +487,11 @@ $([[ "$DEDICATED_WORKTREE" == "1" ]] && echo "- Worktree with the changes: $(pwd
 - Clean + low-risk + CI green proceeds to the deploy gate in the Claude session.
 EOF
 
-emit handoff --id "$RUN_ID"
+REVIEW_COMMAND="/orchestrate review ${TOPIC}"
+emit handoff --id "$RUN_ID" --baton "$BATON" --review-command "$REVIEW_COMMAND" --max-iterations 3
 FAIL_TRAP_ARMED=0
 echo
 echo "== Codex leg done. PR #${PR_NUM} ready for Claude review."
 echo "   Baton: ${BATON}"
 [[ "$DEDICATED_WORKTREE" == "1" ]] && echo "   Worktree: $(pwd)"
-echo "   Resume steps 5–7 in Claude: /orchestrate ${TOPIC}"
+echo "   Resume steps 5–7 in Claude: $REVIEW_COMMAND"

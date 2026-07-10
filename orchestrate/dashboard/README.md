@@ -1,6 +1,6 @@
 # orchestrate dashboard
 
-One local page for **every** `/orchestrate` run on this machine — live status, the 7-step pipeline, and **click-to-answer gates** (approve a deploy/decision from the browser). No dependencies (Python 3 stdlib); binds to `127.0.0.1` only.
+One local page for **every** `/orchestrate` run on this machine — live status, the 7-step pipeline, **click-to-answer gates**, and a copy-review-command action on handoffs. No dependencies (Python 3 stdlib); binds to `127.0.0.1` only.
 
 ## Run it
 ```bash
@@ -27,6 +27,8 @@ orchestrate-status done   --id <id>
 orchestrate-status rm     --id <id>
 ```
 `<id>` is any stable slug for the run (e.g. `<repo>-<topic>`).
+
+`gate`, `fail`, and `handoff` each send one notification. Set `ORCH_NOTIFY_CMD` to an executable path, or set repo-local `notify_cmd` in `.ai/orchestrate.toml` to a quoted path or argv array. The message is appended as one argument and the hook is killed after 10 seconds; no shell evaluates the config. On macOS, Notification Center is the desktop fallback when no hook is configured. Use a phone-capable hook or in-session `PushNotification` for Remote Control.
 
 ## Interactive gates (the couch-approval loop)
 At a gate (e.g. deploy), the run emits `gate …` then blocks on `wait`. The dashboard shows the question with buttons under **Needs you**; your click sends the choice back and the run continues. Same mechanism works for any decision, not just deploy.

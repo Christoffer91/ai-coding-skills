@@ -61,6 +61,8 @@ def load_runs():
             r["health"] = "handoff"
         elif status in ("failed", "fail"):
             r["health"] = "failed"
+        elif status == "rejected":
+            r["health"] = "rejected"
         elif status == "done":
             r["health"] = "done"
         elif r.get("gate") and not r.get("answered"):
@@ -214,7 +216,7 @@ def cleanup_retained_runs(now=None):
                 run = json.load(fh)
         except Exception:
             continue
-        if run.get("status") not in ("done", "failed", "fail"):
+        if run.get("status") not in ("done", "failed", "fail", "rejected"):
             continue
         if now - int(run.get("updatedAt", now)) <= RETENTION_SECS:
             continue

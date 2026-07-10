@@ -1,21 +1,23 @@
-# Per-repo /orchestrate config. Copy to <repo>/.ai/orchestrate.toml (gitignore
-# it if you prefer). Every key is optional; sane defaults apply when absent.
-# Full reference: skills/orchestrate/references/auto-deploy-safety.md
+# Per-repo /orchestrate config. Copy to <repo>/.ai/orchestrate.toml and keep it
+# secret-free. Every key is optional; safe defaults apply when absent.
 
-# --- deploy authorization (the important one) --------------------------------
-# Auto-deploy stays HUMAN-GATED unless YOU (a person) set this to true.
-# An agent must never set this. Absent/false => the loop opens a reviewed,
-# green PR and STOPS for you to merge.
+# Auto-deploy stays HUMAN-GATED unless a person sets this to true. An agent must
+# never write or change this authorization.
 deploy_authorized = false
 
-# --- deploy mechanism (only one needed; used only when authorized) -----------
-# deploy_cmd   = "npm run deploy"        # a raw command
-# deploy_skill = "your-deploy-skill"     # or a deploy skill name
-# deploy_via   = "git-merge"             # or: git-integrated host (Vercel/Netlify) — merge == deploy
-# auto_merge   = false                   # merge the PR before/for deploy
+# deploy_cmd   = "npm run deploy"
+# deploy_skill = "your-deploy-skill"
+# deploy_via   = "git-merge"
+# auto_merge   = false
 
-# --- loop tuning -------------------------------------------------------------
-ci_gate     = true              # require `gh pr checks` green before merge/deploy
-max_iter    = 3                 # review<->fix loop cap
-sandbox     = "workspace-write" # codex exec sandbox for the implement step
-exec_effort = "medium"          # gpt-5.6-sol effort for implement/fix (critique + review stay higher)
+ci_gate     = true
+max_iter    = 3
+sandbox     = "workspace-write"
+exec_effort = "medium"
+
+# Optional notification hook. Prefer an argv array when fixed arguments are
+# needed. The status emitter appends the message as one final argument, enforces
+# a 10-second timeout, and never invokes a shell. Never put tokens here; let the
+# hook obtain credentials from the keychain or its own protected environment.
+# notify_cmd = "/absolute/path/to/phone-notify-hook"
+# notify_cmd = ["/absolute/path/to/phone-notify-hook", "--channel", "orchestrate"]

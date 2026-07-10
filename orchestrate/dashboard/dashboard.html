@@ -87,6 +87,7 @@
   .pill.done{background:var(--done-soft);color:var(--done)}
   .pill.handoff{background:var(--claude-soft);color:var(--claude)}
   .pill.failed{background:var(--fail-soft);color:var(--fail)}
+  .pill.rejected{background:var(--surface-2);color:var(--muted)}
   .caret{color:var(--faint);transition:transform .15s;margin-left:auto;flex:0 0 auto;padding-top:4px;font-size:15px}
   .card.open .caret{transform:rotate(90deg)}
 
@@ -204,7 +205,7 @@ function ago(sec){const s=Math.max(0,Math.round(Date.now()/1000-sec));if(s<60)re
 function dur(sec){const m=Math.max(0,Math.round((Date.now()/1000-sec)/60));if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 function span(a,b){const s=Math.max(0,Math.round((b??Date.now()/1000)-a));if(s<60)return s+"s";const m=Math.round(s/60);if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 const curStep=r=>(r.steps||[]).find(s=>s.state==="active")||(r.steps||[]).slice().reverse().find(s=>s.state==="done")||(r.steps||[])[0];
-const isTerminal=r=>["done","failed","fail"].includes(r.status);
+const isTerminal=r=>["done","failed","fail","rejected"].includes(r.status);
 const isGateOpen=r=>r.gate&&!isAns(r);
 
 function healthOf(r){
@@ -214,6 +215,7 @@ function healthOf(r){
 function stateOf(r){ // one visual state per card: done|failed|needs|handoff|dead|stale|live
   if(r.status==="done")return"done";
   if(r.status==="failed"||r.status==="fail")return"failed";
+  if(r.status==="rejected")return"rejected";
   if(isGateOpen(r))return"needs";
   if(r.status==="handoff"||healthOf(r)==="handoff")return"handoff";
   const h=healthOf(r);
@@ -253,6 +255,7 @@ function card(r){
   const age=r.staleSecs!=null?r.staleSecs:Math.max(0,Math.round(Date.now()/1000-(r.updatedAt||0)));
   const aStr=age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
   const pills={done:'<span class="pill done">merged ✓</span>',failed:'<span class="pill failed">failed</span>',
+    rejected:'<span class="pill rejected">rejected</span>',
     needs:'<span class="pill needs">needs you</span>',handoff:'<span class="pill handoff">with Claude · review</span>',
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled · ${aStr}</span>`,
     live:'<span class="pill live"><span class="d"></span>running</span>'};
@@ -269,8 +272,13 @@ function card(r){
     (r.gate.options||[]).map(o=>`<button class="btn ${o.primary?'primary':''}" data-ans="${esc(r.id)}" data-choice="${esc(o.label)}">${esc(o.label)}</button>`).join("")+`</div></div>`;}
   else if(isAns(r)&&r.gate!==undefined&&ansChoice(r)){gate=`<div class="answered">✓ You chose <b>${esc(ansChoice(r))}</b> — sent to the run</div>`;}
   let actions="";
-  if(["stale","dead","failed"].includes(st)){actions=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;}
-  const edge={done:"var(--done)",failed:"var(--fail)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
+  if(st==="handoff"){
+    const command=(r.review&&r.review.command)||`/orchestrate review ${r.topic}`;
+    actions=`<div class="actions"><button class="btn sm" data-copy-review="${esc(command)}">⧉ copy review command</button></div>`;
+  } else if(["stale","dead","failed"].includes(st)){
+    actions=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;
+  }
+  const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
   return `<div class="card ${open[r.id]?'open':''}" data-id="${esc(r.id)}" style="border-left:4px solid ${edge}">
     <div class="head" data-toggle="${esc(r.id)}">
       <div style="min-width:0"><div class="repo">${esc(r.repo)} · ${esc(r.branch)}</div><div class="title">${esc(r.title)}</div></div>
@@ -296,6 +304,7 @@ function render(){
   if(cnt("stale"))chips.push(`<span class="schip stale"><span class="n">${cnt("stale")}</span> stalled</span>`);
   if(cnt("live"))chips.push(`<span class="schip liv"><span class="d"></span><span class="n">${cnt("live")}</span> live</span>`);
   if(cnt("handoff"))chips.push(`<span class="schip claude"><span class="n">${cnt("handoff")}</span> with claude</span>`);
+  if(cnt("rejected"))chips.push(`<span class="schip"><span class="n">${cnt("rejected")}</span> rejected</span>`);
   if(cnt("done"))chips.push(`<span class="schip"><span class="n">${cnt("done")}</span> done</span>`);
   document.getElementById("strip").innerHTML=chips.join("")||"";
   const needsEl=document.getElementById("needs");
@@ -307,6 +316,11 @@ function render(){
      RUNS.length?"":`<div class="empty">No runs yet. Start one with <span class="mono">/orchestrate &lt;topic&gt;</span> — it will appear here live.</div>`);
 }
 document.addEventListener("click",async e=>{
+  const copy=e.target.closest("[data-copy-review]");
+  if(copy){e.stopPropagation();
+    try{await navigator.clipboard.writeText(copy.dataset.copyReview);copy.textContent="✓ copied review command";}
+    catch(_){copy.textContent="✕ copy failed";copy.title="Copy the command from the run details instead.";}
+    return;}
   const ans=e.target.closest("[data-ans]");
   if(ans){e.stopPropagation();const id=ans.dataset.ans,choice=ans.dataset.choice;localAnswered[id]=choice;render();
     try{await fetch("/api/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,choice})});}catch(_){}

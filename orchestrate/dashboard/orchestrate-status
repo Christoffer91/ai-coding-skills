@@ -10,14 +10,25 @@ driver at each step. No dependencies (Python 3 stdlib).
   orchestrate-status pr     --id ID --number N --url U [--state OPEN]
   orchestrate-status metric --id ID --key tests --value "12/12"
   orchestrate-status worker --id ID --pid PID --pid-start TOKEN --pgid PGID --cwd DIR
-  orchestrate-status handoff --id ID
+  orchestrate-status handoff --id ID [--baton PATH] [--review-command COMMAND]
   orchestrate-status fail   --id ID
   orchestrate-status gate   --id ID --question "…" --option "Merge & deploy:primary" --option "Leave PR open" [--kind deploy]
   orchestrate-status wait   --id ID [--timeout 0] [--interval 3]   # blocks until answered; prints choice; clears gate
   orchestrate-status done   --id ID [--status done|failed]
+  orchestrate-status pause  --id ID
+  orchestrate-status cancel --id ID [--reason TEXT]
+  orchestrate-status checkpoint --id ID (--name NAME [--continuation ACTION] | --clear)
   orchestrate-status rm     --id ID
 """
-import argparse, json, os, sys, time
+import argparse
+import ast
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import time
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
@@ -52,6 +63,88 @@ def need(rid):
         sys.exit(f"orchestrate-status: no run '{rid}' (run `start` first)")
     return r
 
+
+def _strip_toml_comment(value):
+    """Strip a TOML comment without treating hashes inside quotes as comments."""
+    quote = None
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote == '"':
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == "#":
+            return value[:index].rstrip()
+    return value.strip()
+
+
+def _notify_from_toml(cwd):
+    """Read only notify_cmd from the repo-local config on Python 3.9+.
+
+    The supported value is a TOML/Python-compatible quoted string or array of
+    strings.  ast.literal_eval is deliberately used instead of executing config.
+    """
+    if not cwd:
+        return None
+    config = os.path.join(cwd, ".ai", "orchestrate.toml")
+    try:
+        with open(config, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    in_top_level = True
+    for line in lines:
+        if line.lstrip().startswith("["):
+            in_top_level = False
+        if not in_top_level:
+            continue
+        key, sep, raw = line.partition("=")
+        if not sep or key.strip() != "notify_cmd":
+            continue
+        try:
+            value = ast.literal_eval(_strip_toml_comment(raw))
+        except (SyntaxError, ValueError):
+            return None
+        if isinstance(value, str) and value:
+            return [value]
+        if isinstance(value, list) and value and all(isinstance(item, str) and item for item in value):
+            return value
+        return None
+    return None
+
+
+def notify(r, message):
+    """Invoke one bounded, non-shell notification hook; failures are non-fatal."""
+    if os.environ.get("ORCH_NOTIFY_DISABLE") == "1":
+        return
+    env_cmd = os.environ.get("ORCH_NOTIFY_CMD")
+    config_root = r.get("repoRoot") or r.get("cwd") or os.getcwd()
+    argv = [env_cmd] if env_cmd else _notify_from_toml(config_root)
+    if not argv and platform.system() == "Darwin" and shutil.which("osascript"):
+        argv = [
+            "osascript", "-e", "on run argv", "-e",
+            'display notification (item 1 of argv) with title "orchestrate"',
+            "-e", "end run", "--",
+        ]
+    if not argv:
+        return
+    executable = shutil.which(argv[0]) if os.path.sep not in argv[0] else argv[0]
+    if not executable or not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        return
+    argv[0] = executable
+    try:
+        subprocess.run(
+            argv + [message], check=False, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
 def main():
     ap = argparse.ArgumentParser(add_help=True)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -61,7 +154,8 @@ def main():
     for f in ("repo", "topic", "title", "branch"): p.add_argument("--" + f, required=True)
     p.add_argument("--planner", default="Claude"); p.add_argument("--executor", default="gpt-5.6-sol · medium")
     p.add_argument("--mode", default="hands-off"); p.add_argument("--pid", type=int, default=None)
-    p.add_argument("--cwd", default=None); p.add_argument("--driver", default=None)  # for one-click restart
+    p.add_argument("--cwd", default=None); p.add_argument("--repo-root", default=None)
+    p.add_argument("--driver", default=None)  # for one-click restart
     p.add_argument("--pid-start", default=None); p.add_argument("--pgid", type=int, default=None)
     p.add_argument("--plan", default=None); p.add_argument("--worktree", action="store_true")
     p.add_argument("--env", action="append", default=[])
@@ -82,13 +176,21 @@ def main():
     p = sub.add_parser("gate"); common(p)
     p.add_argument("--question", required=True); p.add_argument("--kind", default="gate")
     p.add_argument("--option", action="append", default=[], required=True)
+    p.add_argument("--checkpoint", default=None); p.add_argument("--continuation", default=None)
 
     p = sub.add_parser("wait"); common(p)
     p.add_argument("--timeout", type=int, default=0); p.add_argument("--interval", type=float, default=3.0)
 
     p = sub.add_parser("done"); common(p); p.add_argument("--status", default="done")
     p = sub.add_parser("handoff"); common(p)
+    p.add_argument("--baton", default=None); p.add_argument("--review-command", default=None)
+    p.add_argument("--max-iterations", type=int, default=3)
     p = sub.add_parser("fail"); common(p)
+    p = sub.add_parser("pause"); common(p)
+    p = sub.add_parser("cancel"); common(p); p.add_argument("--reason", default="rejected")
+    p = sub.add_parser("checkpoint"); common(p)
+    p.add_argument("--name", default=None); p.add_argument("--continuation", default=None)
+    p.add_argument("--clear", action="store_true")
     p = sub.add_parser("rm"); common(p)
     p = sub.add_parser("heartbeat"); common(p); p.add_argument("--pid", type=int, default=None)
 
@@ -105,7 +207,8 @@ def main():
         save({"id": os.path.basename(a.id), "repo": a.repo, "topic": a.topic, "title": a.title,
               "branch": a.branch, "planner": a.planner, "executor": a.executor, "mode": a.mode,
               "startedAt": int(time.time()), "step": 1, "status": "running", "pid": a.pid,
-              "cwd": a.cwd, "driver": a.driver, "pidStart": a.pid_start, "pgid": a.pgid,
+              "cwd": a.cwd, "repoRoot": a.repo_root or a.cwd, "driver": a.driver,
+              "pidStart": a.pid_start, "pgid": a.pgid,
               "pidCwd": a.cwd, "worker": None,
               "restart": {"plan": a.plan, "dedicatedWorktree": a.worktree, "env": restart_env},
               "pr": None, "metrics": {}, "gate": None, "steps": steps})
@@ -147,6 +250,9 @@ def main():
             lbl, _, tag = o.partition(":")
             opts.append({"label": lbl, "primary": tag.strip() == "primary"})
         r["gate"] = {"kind": a.kind, "question": a.question, "options": opts}
+        r["lastGateAnswer"] = None
+        if a.checkpoint:
+            r["checkpoint"] = {"name": a.checkpoint, "continuation": a.continuation}
         r["status"] = "await"
         # clear any stale answer so this gate waits fresh
         af = os.path.join(ANS, os.path.basename(a.id) + ".json")
@@ -154,6 +260,7 @@ def main():
             try: os.remove(af)
             except OSError: pass
         save(r)
+        notify(r, f"orchestrate {r.get('repo')}/{r.get('topic')} needs you: {a.question}")
 
     elif a.cmd == "wait":
         af = os.path.join(ANS, os.path.basename(a.id) + ".json")
@@ -173,6 +280,7 @@ def main():
                     except OSError: pass
                     continue
                 if r:
+                    r["lastGateAnswer"] = {"kind": (r.get("gate") or {}).get("kind"), "choice": choice}
                     r["gate"] = None
                     if r.get("status") == "await": r["status"] = "running"
                     save(r)
@@ -192,13 +300,41 @@ def main():
     elif a.cmd == "handoff":
         r = need(a.id)
         r["status"] = "handoff"; r["pid"] = None; r["worker"] = None; r["gate"] = None
+        r["checkpoint"] = None
+        r["review"] = {"baton": a.baton, "command": a.review_command,
+                       "iteration": 0, "maxIterations": a.max_iterations}
         save(r)
+        pr_number = (r.get("pr") or {}).get("number", "?")
+        command = a.review_command or f"/orchestrate review {r.get('topic')}"
+        notify(r, f"PR #{pr_number} ready for review — run: {command}")
 
     elif a.cmd == "fail":
         r = need(a.id)
         i = max(0, min(len(r.get("steps", [])) - 1, int(r.get("step", 1)) - 1))
         if r.get("steps"): r["steps"][i]["state"] = "fail"
         r["status"] = "failed"; r["gate"] = None; r["worker"] = None
+        save(r)
+        notify(r, f"orchestrate {r.get('repo')}/{r.get('topic')} failed at step {r.get('step', 1)}")
+
+    elif a.cmd == "pause":
+        r = need(a.id)
+        r["pid"] = None; r["worker"] = None
+        save(r)
+
+    elif a.cmd == "cancel":
+        r = need(a.id)
+        r["status"] = "rejected"; r["pid"] = None; r["worker"] = None; r["gate"] = None
+        r["checkpoint"] = None; r["reason"] = a.reason
+        save(r)
+
+    elif a.cmd == "checkpoint":
+        r = need(a.id)
+        if a.clear:
+            r["checkpoint"] = None
+        elif a.name:
+            r["checkpoint"] = {"name": a.name, "continuation": a.continuation}
+        else:
+            sys.exit("checkpoint requires --name or --clear")
         save(r)
 
     elif a.cmd == "heartbeat":

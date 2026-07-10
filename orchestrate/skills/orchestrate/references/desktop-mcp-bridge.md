@@ -1,8 +1,8 @@
-# Running the loop from Claude Desktop (codex as an MCP tool)
+# Running the loop from Claude in Desktop (Codex as an MCP tool)
 
-Claude Desktop can't run arbitrary Bash, so it can't call `codex exec` directly the way Claude Code (CLI) can. Bridge Codex in as an **MCP tool** using Codex's own server mode, then Opus in Desktop can hand execution to gpt-5.6-sol for steps 2/3/6 and review the PR via the GitHub connector.
+Claude in Desktop can't run arbitrary Bash, so it can't call `codex exec` directly the way Claude Code (CLI) can. Bridge Codex in as an **MCP tool** using Codex's server mode, then Claude in Desktop can hand execution to gpt-5.6-sol for steps 2/3/6 and review the PR via the GitHub connector.
 
-> Codex `mcp-server` is marked experimental in `0.142.5`. Verify the exact exposed tool surface with `codex mcp-server --help` before relying on it. If it changes, fall back to running the loop from Claude Code (CLI), which is the more robust surface for unattended work anyway.
+> This guidance targets Codex `0.143+`. `mcp-server` remains an evolving surface, so verify it with `codex mcp-server --help`. Fall back to Claude Code (CLI) for unattended work if the exposed tools differ.
 
 ## Setup (macOS)
 1. Confirm the serve mode exists: `codex mcp-server --help` (Codex runs as an MCP server over stdio).
@@ -26,8 +26,8 @@ Claude Desktop can't run arbitrary Bash, so it can't call `codex exec` directly 
 - **Deploy:** same risk gate as CLI; Desktop should human-gate deploy.
 
 ## Recommended split
-- **Kick off + PR review in Desktop** (nice for reading diffs, mobile, quick approvals).
-- **Unattended end-to-end loop in Claude Code (CLI)** — it has Bash, the full flag surface, `--dry-run`, and the `scripts/orchestrate.sh` driver. The `HANDOFF-*.md` batons + `.ai/` memctl state let you start in Desktop and resume the same task in the CLI (or vice-versa).
+- **Kick off + PR review in Desktop** (nice for reading diffs and quick approvals). Pair **Remote Control** in the Claude app when the phone is the interaction path; use `PushNotification` plus `AskUserQuestion` for each in-session gate.
+- **Unattended end-to-end loop in Claude Code (CLI)** — it has Bash, the full flag surface, `--dry-run`, and the `scripts/orchestrate.sh` driver. The `HANDOFF-*.md` baton plus `~/.orchestrate/runs/<id>.json` let you start in Desktop and resume the same task in the CLI (or vice versa).
 
 ## Alternative (CLI-managed MCP)
 To expose codex to Claude **Code** instead: `claude mcp add codex -- /absolute/path/to/codex mcp-server`. Usually unnecessary — the CLI already calls `codex exec` via Bash through the `codex` skill.
