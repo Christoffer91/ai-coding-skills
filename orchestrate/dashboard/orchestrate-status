@@ -19,6 +19,9 @@ driver at each step. No dependencies (Python 3 stdlib).
   orchestrate-status cancel --id ID [--reason TEXT]
   orchestrate-status checkpoint --id ID (--name NAME [--continuation ACTION] | --clear)
   orchestrate-status rm     --id ID
+  orchestrate-status overrides set --role critique|implement [--model MODEL] [--effort EFFORT] [--provider PROVIDER] [--ttl SECONDS]
+  orchestrate-status overrides get [--role critique|implement]
+  orchestrate-status overrides clear [--role critique|implement]
 """
 import argparse
 import ast
@@ -29,6 +32,11 @@ import shutil
 import subprocess
 import sys
 import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import overrides
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
@@ -193,10 +201,39 @@ def main():
     p.add_argument("--clear", action="store_true")
     p = sub.add_parser("rm"); common(p)
     p = sub.add_parser("heartbeat"); common(p); p.add_argument("--pid", type=int, default=None)
+    p = sub.add_parser("execution"); common(p)
+    p.add_argument("--role", choices=overrides.ROLES, required=True)
+    p.add_argument("--provider", choices=overrides.PROVIDERS, required=True)
+    p.add_argument("--model", default=None); p.add_argument("--effort", default=None)
+    p.add_argument("--source", choices=("config", "env", "default", "override"), required=True)
+    p.add_argument("--override-id", default=None); p.add_argument("--set-at", type=int, default=None)
+    p.add_argument("--expires-at", type=int, default=None); p.add_argument("--fallback", action="store_true")
+    p = sub.add_parser("overrides")
+    override_sub = p.add_subparsers(dest="override_cmd", required=True)
+    q = override_sub.add_parser("set")
+    q.add_argument("--role", required=True); q.add_argument("--model", default=None)
+    q.add_argument("--effort", default=None); q.add_argument("--provider", default=None)
+    q.add_argument("--ttl", type=int, default=None)
+    q = override_sub.add_parser("get"); q.add_argument("--role", default=None)
+    q = override_sub.add_parser("clear"); q.add_argument("--role", default=None)
 
     a = ap.parse_args()
 
-    if a.cmd == "start":
+    if a.cmd == "overrides":
+        try:
+            if a.override_cmd == "set":
+                payload = {key: value for key, value in vars(a).items()
+                           if key in ("role", "model", "effort", "provider", "ttl") and value is not None}
+                print(json.dumps(overrides.set_override(payload), separators=(",", ":")))
+            elif a.override_cmd == "get":
+                print(json.dumps(overrides.get_overrides(role=a.role), separators=(",", ":")))
+            else:
+                overrides.clear_overrides(role=a.role)
+                print(json.dumps({"ok": True}, separators=(",", ":")))
+        except overrides.OverrideError as exc:
+            sys.exit(f"orchestrate-status: {exc}")
+
+    elif a.cmd == "start":
         restart_env = {}
         for item in a.env:
             key, sep, value = item.partition("=")
@@ -237,6 +274,16 @@ def main():
 
     elif a.cmd == "metric":
         r = need(a.id); r.setdefault("metrics", {})[a.key] = a.value; save(r)
+
+    elif a.cmd == "execution":
+        r = need(a.id)
+        entry = {"provider": a.provider, "source": a.source, "fallback": bool(a.fallback)}
+        for key, value in (("model", a.model), ("effort", a.effort), ("overrideId", a.override_id),
+                           ("setAt", a.set_at), ("expiresAt", a.expires_at)):
+            if value is not None:
+                entry[key] = value
+        r.setdefault("execution", {})[a.role] = entry
+        save(r)
 
     elif a.cmd == "worker":
         r = need(a.id)

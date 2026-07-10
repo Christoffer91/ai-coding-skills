@@ -15,6 +15,7 @@
 #   ORCH_TITLE        dashboard card title (default topic)
 #   ORCH_GATE_TIMEOUT seconds to wait for a gate; 0 waits forever (default 0)
 #   ORCH_VERIFY_TIMEOUT seconds allowed per configured verify command (default 900)
+#   ORCH_OVERRIDE_PATH fixture override store for deterministic dry-runs/tests
 #   ORCH_DRYRUN=1     print the command plan without writes, auth, fetch, or emit
 set -Eeuo pipefail
 
@@ -42,6 +43,8 @@ PLAN="${2:-PLAN-${TOPIC}.md}"
 BRANCH="orch/${TOPIC}"
 SANDBOX="${ORCH_SANDBOX:-workspace-write}"
 EXEC_EFFORT="${ORCH_EXEC_EFFORT:-medium}"
+EFFORT_SOURCE="default"
+[[ -n "${ORCH_EXEC_EFFORT+x}" ]] && EFFORT_SOURCE="env"
 WORKTREE="${ORCH_WORKTREE:-0}"
 DRY="${ORCH_DRYRUN:-0}"
 RESTART="${ORCH_RESTART:-0}"
@@ -112,14 +115,79 @@ local_base() {
   printf '%s\n' "$base"
 }
 
+STATUS_BIN=""
+for candidate in "$(dirname "$SELF")/../dashboard/orchestrate-status" \
+                 "$(dirname "$SELF")/../skills/orchestrate/dashboard/orchestrate-status" \
+                 "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status"; do
+  [[ -x "$candidate" ]] && { STATUS_BIN="$candidate"; break; }
+done
+[[ -n "$STATUS_BIN" ]] || STATUS_BIN="$(command -v orchestrate-status 2>/dev/null || true)"
+
+# Resolve once per logical step. The JSON payload is parsed by Python rather
+# than shell-split, and retries reuse these globals for deterministic execution.
+OVERRIDE_PROVIDER="codex"
+OVERRIDE_MODEL=""
+OVERRIDE_EFFORT=""
+OVERRIDE_SOURCE="$EFFORT_SOURCE"
+OVERRIDE_ID=""
+OVERRIDE_SET_AT=""
+OVERRIDE_EXPIRES_AT=""
+resolve_override() { # <role> <configured-effort>
+  local role="$1" configured_effort="$2" payload
+  OVERRIDE_PROVIDER="codex"; OVERRIDE_MODEL=""; OVERRIDE_EFFORT="$configured_effort"
+  OVERRIDE_SOURCE="$EFFORT_SOURCE"; OVERRIDE_ID=""; OVERRIDE_SET_AT=""; OVERRIDE_EXPIRES_AT=""
+  # A dry run is host-state-independent unless a fixture store is explicitly supplied.
+  [[ "$DRY" == "1" && -z "${ORCH_OVERRIDE_PATH:-}" ]] && return 0
+  [[ -n "$STATUS_BIN" ]] || return 0
+  payload="$("$STATUS_BIN" overrides get --role "$role")" || die "cannot read model overrides"
+  local field count=0
+  while IFS= read -r field; do
+    case "$count" in
+      0) OVERRIDE_PROVIDER="$field" ;;
+      1) OVERRIDE_MODEL="$field" ;;
+      2) OVERRIDE_EFFORT="$field" ;;
+      3) OVERRIDE_SOURCE="$field" ;;
+      4) OVERRIDE_ID="$field" ;;
+      5) OVERRIDE_SET_AT="$field" ;;
+      6) OVERRIDE_EXPIRES_AT="$field" ;;
+    esac
+    count=$((count + 1))
+  done < <(ORCH_OVERRIDE_JSON="$payload" "$VERIFY_PYTHON" - "$role" "$configured_effort" "$EFFORT_SOURCE" <<'PY'
+import json, os, sys
+data = json.loads(os.environ["ORCH_OVERRIDE_JSON"])
+entry = (data.get("overrides") or {}).get(sys.argv[1])
+if entry:
+    values = [entry.get("provider", "codex"), entry.get("model", ""), entry.get("effort", sys.argv[2]),
+              "override", entry.get("id", ""), str(entry.get("setAt", "")), str(entry.get("expiresAt", ""))]
+else:
+    values = ["codex", "", sys.argv[2], sys.argv[3], "", "", ""]
+print("\n".join(values))
+PY
+)
+  ((count == 7)) || die "override resolver returned an invalid response"
+}
+
+print_step_command() { # <role> <sandbox> <effort>
+  local role="$1" sandbox="$2" effort="$3"
+  resolve_override "$role" "$effort"
+  if [[ "$OVERRIDE_PROVIDER" == "claude" ]]; then
+    printf '+ claude -p --model %q --permission-mode plan --tools %q --no-session-persistence < <critique-prompt> > <critique>\n' "$OVERRIDE_MODEL" ""
+  else
+    printf '+ codex exec -s %q -c approval_policy=never' "$sandbox"
+    [[ -n "$OVERRIDE_MODEL" ]] && printf ' -m %q' "$OVERRIDE_MODEL"
+    [[ -n "$OVERRIDE_EFFORT" ]] && printf ' -c model_reasoning_effort=%q' "$OVERRIDE_EFFORT"
+    printf ' -o <output> - < <prompt>\n'
+  fi
+}
+
 if [[ "$DRY" == "1" ]]; then
   BASE="$(local_base)"
   echo "== orchestrate dry-run: $TOPIC =="
   echo "   plan=$PLAN_ABS  branch=$BRANCH  base=$BASE  sandbox=$SANDBOX  effort=$EXEC_EFFORT  worktree=$WORKTREE"
   [[ "$WORKTREE" == "1" ]] && echo "+ git worktree add -b '$BRANCH' <temp-worktree> 'origin/$BASE'"
-  echo "+ codex exec -s read-only -c approval_policy=never -o <critique> - < <critique-prompt>"
+  print_step_command critique read-only ""
   [[ "$WORKTREE" == "1" ]] || echo "+ git switch -c '$BRANCH'  # or reuse the existing task branch"
-  echo "+ codex exec -s '$SANDBOX' -c approval_policy=never -c model_reasoning_effort='$EXEC_EFFORT' -o <implementation> - < <implementation-prompt>"
+  print_step_command implement "$SANDBOX" "$EXEC_EFFORT"
   VERIFY_NAMES="$("$VERIFY_PYTHON" "$VERIFY_HELPER" configured --config "$VERIFY_CONFIG")" || \
     die "invalid verify configuration: $VERIFY_CONFIG"
   while IFS= read -r verify_name; do
@@ -263,13 +331,6 @@ else
     die "working tree dirty — commit/stash first, or set ORCH_WORKTREE=1"
 fi
 
-STATUS_BIN=""
-for candidate in "$(dirname "$SELF")/../dashboard/orchestrate-status" \
-                 "$(dirname "$SELF")/../skills/orchestrate/dashboard/orchestrate-status" \
-                 "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status"; do
-  [[ -x "$candidate" ]] && { STATUS_BIN="$candidate"; break; }
-done
-[[ -n "$STATUS_BIN" ]] || STATUS_BIN="$(command -v orchestrate-status 2>/dev/null || true)"
 emit() { [[ -n "${STATUS_BIN:-}" ]] && python3 "$STATUS_BIN" "$@" >/dev/null 2>&1 || true; }
 proc_start() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 proc_pgid() { ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'; }
@@ -320,17 +381,43 @@ capture_session() {
   [[ -n "$session" ]] && emit metric --id "$RUN_ID" --key session --value "$session"
 }
 
-codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n>
-  local prompt_file="$1" out_file="$2" sandbox="$3" effort="$4" step_n="$5"
+codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
+  local prompt_file="$1" out_file="$2" sandbox="$3" effort="$4" step_n="$5" role="$6"
   local attempt=1 max="${ORCH_MAX_RETRY:-2}" kill_after="${ORCH_STALL_KILL:-300}"
-  local -a cmd=(codex exec -s "$sandbox" -c approval_policy=never)
-  [[ -n "$effort" ]] && cmd+=(-c "model_reasoning_effort=$effort")
-  cmd+=(-o "$out_file" -)
+  resolve_override "$role" "$effort"
+  local -a execution=(execution --id "$RUN_ID" --role "$role" --provider "$OVERRIDE_PROVIDER"
+    --source "$OVERRIDE_SOURCE")
+  [[ -n "$OVERRIDE_MODEL" ]] && execution+=(--model "$OVERRIDE_MODEL")
+  [[ -n "$OVERRIDE_EFFORT" ]] && execution+=(--effort "$OVERRIDE_EFFORT")
+  [[ -n "$OVERRIDE_ID" ]] && execution+=(--override-id "$OVERRIDE_ID")
+  [[ -n "$OVERRIDE_SET_AT" ]] && execution+=(--set-at "$OVERRIDE_SET_AT")
+  [[ -n "$OVERRIDE_EXPIRES_AT" ]] && execution+=(--expires-at "$OVERRIDE_EXPIRES_AT")
+  emit "${execution[@]}"
+  emit metric --id "$RUN_ID" --key "model.$role" \
+    --value "$OVERRIDE_PROVIDER:${OVERRIDE_MODEL:-configured}:${OVERRIDE_EFFORT:-configured}"
+  local use_claude=0
+  local -a cmd=()
+  if [[ "$OVERRIDE_PROVIDER" == "claude" ]]; then
+    [[ "$role" == "critique" && -n "$OVERRIDE_MODEL" ]] || die "invalid Claude override for $role"
+    command -v claude >/dev/null || die "Claude critique override requested but claude CLI is unavailable (fail closed)"
+    # These flags disable every tool and session persistence; no Codex fallback is used.
+    cmd=(claude -p --model "$OVERRIDE_MODEL" --permission-mode plan --tools "" --no-session-persistence)
+    use_claude=1
+  else
+    cmd=(codex exec -s "$sandbox" -c approval_policy=never)
+    [[ -n "$OVERRIDE_MODEL" ]] && cmd+=(-m "$OVERRIDE_MODEL")
+    [[ -n "$OVERRIDE_EFFORT" ]] && cmd+=(-c "model_reasoning_effort=$OVERRIDE_EFFORT")
+    cmd+=(-o "$out_file" -)
+  fi
   while :; do
     local log cpid last_size=-1 idle=0 hung=0 rc=0 size worker_start worker_pgid last_act_t=0 act
     log="$(mktemp -t orch-clog-XXXX).log"
     [[ -n "$step_n" ]] && emit metric --id "$RUN_ID" --key log --value "$log"
-    "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
+    if [[ "$use_claude" == "1" ]]; then
+      "${cmd[@]}" < "$prompt_file" >"$out_file" 2>"$log" &
+    else
+      "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
+    fi
     cpid=$!
     worker_start="$(proc_start "$cpid" || true)"
     worker_pgid="$(proc_pgid "$cpid" || true)"
@@ -361,9 +448,9 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n>
     done
     if [[ "$hung" == "0" ]]; then
       if wait "$cpid"; then rc=0; else rc=$?; fi
-      capture_session "$log"
+      [[ "$use_claude" == "0" ]] && capture_session "$log"
       [[ "$rc" -eq 0 ]] && return 0
-      echo "  Codex failed (log: $log)" >&2
+      echo "  $([[ "$use_claude" == "1" ]] && echo Claude || echo Codex) failed (log: $log)" >&2
       return "$rc"
     fi
     if (( attempt > max )); then
@@ -470,7 +557,7 @@ if [[ "$RESUME" != "1" ]]; then
     printf 'You are an elite engineer. Critique this plan for a change in %s: risks, wrong assumptions, missing edge cases, simpler approaches, and anything that would make a reviewer reject the PR. Be specific and terse. Plan follows:\n\n' "$(pwd)"
     cat "$PLAN"
   } > "$CPROMPT"
-  codex_run "$CPROMPT" "$CRIT" read-only "" 2 || die "critique step failed (see log above)"
+  codex_run "$CPROMPT" "$CRIT" read-only "" 2 critique || die "critique step failed (see log above)"
   echo "   critique -> $CRIT"
 
   CURRENT_STEP=3
@@ -491,7 +578,7 @@ if [[ "$RESUME" != "1" ]]; then
   else
     printf 'Implement the plan in %s on the current branch (%s). Consider the critique at %s. Run the project'"'"'s tests/lint/build until green. Then stage and git commit with a clear message. For any gated action, stop and emit "⛔ APPROVAL-REQUEST: <action> — <why>". Do NOT push and do NOT open a PR — the sandbox has no network; the driver handles that. Summarize what you changed on the last line.\n' "$PLAN" "$BRANCH" "$CRIT" > "$IPROMPT"
   fi
-  codex_run "$IPROMPT" "$IMPL" "$SANDBOX" "$EXEC_EFFORT" 3 || die "implement step failed"
+  codex_run "$IPROMPT" "$IMPL" "$SANDBOX" "$EXEC_EFFORT" 3 implement || die "implement step failed"
   IMPL_SESSION_ID="$LAST_SESSION_ID"
   [[ -n "$IMPL_SESSION_ID" ]] || die "implementation completed but no Codex session id was captured"
 else

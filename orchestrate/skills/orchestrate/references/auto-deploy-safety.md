@@ -52,6 +52,8 @@ exec_effort  = "medium"             # gpt-5.6-sol reasoning effort for implement
 auto_merge   = false                # merge the PR before deploy (default false: leave merge to user unless low-risk+green)
 ```
 
+`~/.orchestrate/overrides.json` is separate user-only runtime state, never a repository file and never committed. A currently active role override wins over `ORCH_EXEC_EFFORT` and this `exec_effort` value for the logical step it starts; otherwise normal environment/config/default precedence remains in effect. The driver snapshots the resolved override at step start, so retries do not change model or effort if the TTL expires or an operator updates the global setting mid-step.
+
 ## Merge policy
 - Low-risk + green + `auto_merge=true` → `gh pr merge <n> --squash --delete-branch`, then deploy.
 - Otherwise leave the PR open for the user to merge; report it's ready.

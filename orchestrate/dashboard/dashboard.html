@@ -65,6 +65,21 @@
   .schip.liv .d{width:7px;height:7px;border-radius:50%;background:var(--live);animation:pulse 2.2s infinite}
   .schip.claude{color:var(--claude)}
 
+  /* ── temporary, machine-wide model overrides ───────────── */
+  .overrides{margin:-17px 0 30px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);overflow:hidden}
+  .override-head{display:flex;align-items:center;gap:10px;width:100%;padding:12px 15px;border:0;background:transparent;color:var(--muted);cursor:pointer;text-align:left;font:600 13px var(--mono)}
+  .override-head:hover{background:var(--surface-2)} .override-head b{color:var(--ink)}
+  .override-body{display:none;padding:0 15px 15px;border-top:1px solid var(--border)} .overrides.open .override-body{display:block}
+  .override-warning{margin:12px 0;padding:10px 12px;border-radius:9px;background:var(--await-soft);border:1px solid color-mix(in srgb,var(--await) 35%,transparent);color:#775500;font:600 12px var(--mono);line-height:1.45}
+  .override-scope{margin:12px 0;color:var(--muted);font-size:12px;line-height:1.45}
+  .override-row{display:grid;grid-template-columns:76px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 72px auto auto;gap:7px;align-items:center;padding:9px 0;border-top:1px solid var(--border)}
+  .override-row:first-of-type{border-top:0}.override-row label{font:650 12px var(--mono);color:var(--ink)}
+  .override-row select,.override-row input{min-width:0;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--ink);padding:7px;font:12px var(--mono)}
+  .model-cell{display:grid;gap:6px}.model-cell select,.model-cell input{width:100%;box-sizing:border-box}
+  .override-row .custom-model{display:none}.override-row .custom-model.show{display:block}
+  .override-error{min-height:17px;margin-top:8px;color:var(--fail);font:12px var(--mono)}
+  @media(max-width:760px){.override-row{grid-template-columns:75px 1fr 1fr}.override-row .provider,.override-row .ttl{grid-column:auto}.override-row .btn{width:max-content}}
+
   section h2{font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
     font-weight:700;font-family:var(--mono);margin:0 0 14px;display:flex;align-items:center;gap:9px}
   .count-pill{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-size:12px;color:var(--muted)}
@@ -188,13 +203,14 @@
   </header>
 
   <div class="strip" id="strip"></div>
+  <section class="overrides" id="overrides-panel"></section>
   <section id="needs" style="margin-bottom:30px"></section>
   <section id="active"></section>
   <div class="foot">~/.orchestrate/runs · auto-refreshes · click a run for its full pipeline</div>
 </div>
 
 <script>
-let RUNS=[], open={}, localAnswered={};
+let RUNS=[], open={}, localAnswered={}, OVERRIDES={}, overridesOpen=false, overrideError="";
 const kindOf=a=>/claude|opus|fable|sonnet/i.test(a||"")?"claude":/gpt|codex|sol|terra/i.test(a||"")?"codex":"neutral";
 const whoLabel=k=>k==="claude"?"Claude":k==="codex"?"Codex":"Driver";
 const safeUrl=u=>/^(https?:\/\/|#)/.test(u||"")?u:"#";
@@ -279,6 +295,8 @@ function card(r){
     actions=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;
   }
   const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
+  const execution=(r.execution||{}).implement||{};
+  const executor=`${r.executor||"gpt-5.6-sol"}${execution.source==="override"?" (override)":""}`;
   return `<div class="card ${open[r.id]?'open':''}" data-id="${esc(r.id)}" style="border-left:4px solid ${edge}">
     <div class="head" data-toggle="${esc(r.id)}">
       <div style="min-width:0"><div class="repo">${esc(r.repo)} · ${esc(r.branch)}</div><div class="title">${esc(r.title)}</div></div>
@@ -290,10 +308,15 @@ function card(r){
       <div><div class="lbl">elapsed</div><div class="v">${r.startedAt?dur(r.startedAt):"—"}</div></div>
       <div><div class="lbl">updated</div><div class="v small">${r.updatedAt?ago(r.updatedAt):"—"}</div></div>
       <div><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div></div>
-    <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.6-sol")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
+    <div class="chips"><span class="chip exec">${esc(executor)}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
       ${r.pr?`<a class="pr" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">${prTxt} ↗</a>`:`<span class="chip">${prTxt}</span>`}</div>
     ${gate}${actions}${detail(r)}</div>`;
 }
+function left(seconds){seconds=Math.max(0,Number(seconds)||0);const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60);return h?`${h}h ${m}m`:`${m}m`;}
+function overrideSummary(){return Object.values(OVERRIDES).map(o=>`${o.role}→${o.provider}:${o.model||"configured"}${o.effort?"·"+o.effort:""} (${left(o.secondsLeft)} left)`).join(" · ");}
+function modelControl(role,o){const known=["gpt-5.6-sol","gpt-5.6-terra","gpt-5.5"], value=o&&o.model||"gpt-5.6-sol", custom=!known.includes(value);return `<span class="model-cell"><select data-field="model" data-role="${role}"><option value="gpt-5.6-sol" ${value==="gpt-5.6-sol"?"selected":""}>gpt-5.6-sol</option><option value="gpt-5.6-terra" ${value==="gpt-5.6-terra"?"selected":""}>gpt-5.6-terra</option><option value="gpt-5.5" ${value==="gpt-5.5"?"selected":""}>gpt-5.5</option><option value="custom" ${custom?"selected":""}>custom…</option></select><input class="custom-model ${custom?"show":""}" data-custom-model="${role}" value="${esc(custom?value:"")}" aria-label="Custom ${role} model" placeholder="gpt-…"></span>`;}
+function overrideRow(role){const o=OVERRIDES[role]||null, effort=o&&o.effort||"medium";return `<div class="override-row" data-override-role="${role}"><label>${role}</label>${modelControl(role,o)}${role==="critique"?`<select class="provider" data-field="provider"><option value="codex" ${(o&&o.provider)==="claude"?"":"selected"}>codex</option><option value="claude" ${(o&&o.provider)==="claude"?"selected":""}>claude</option></select>`:`<input class="provider" value="codex" disabled>`}<select data-field="effort"><option value="low" ${effort==="low"?"selected":""}>low</option><option value="medium" ${effort==="medium"?"selected":""}>medium</option><option value="high" ${effort==="high"?"selected":""}>high</option><option value="xhigh" ${effort==="xhigh"?"selected":""}>xhigh</option><option value="ultra" ${effort==="ultra"?"selected":""}>ultra</option></select><select class="ttl" data-field="ttl"><option value="3600">1h</option><option value="14400" selected>4h</option><option value="86400">24h</option></select><button class="btn sm" data-override-apply="${role}">Apply</button><button class="btn sm" data-override-clear="${role}">Clear</button></div>`;}
+function renderOverrides(){const active=Object.keys(OVERRIDES).length, summary=active?`⚠ overrides active: ${esc(overrideSummary())}`:"models: configured defaults · override →";document.getElementById("overrides-panel").className=`overrides ${overridesOpen?"open":""}`;document.getElementById("overrides-panel").innerHTML=`<button class="override-head" data-overrides-toggle><b>${active?"model overrides active":"model overrides"}</b><span>${summary}</span><span style="margin-left:auto">${overridesOpen?"⌃":"⌄"}</span></button><div class="override-body">${active?`<div class="override-warning">${summary} <button class="btn sm" data-override-clear-all style="margin-left:8px">Clear all</button></div>`:""}<div class="override-scope">Temporary, machine-wide state: applies to newly started logical steps in every Claude-driver run. Each Apply replaces that role’s prior override and always expires.</div>${overrideRow("critique")}${overrideRow("implement")}<div class="override-error">${esc(overrideError)}</div></div>`;}
 function render(){
   const needs=RUNS.filter(isGateOpen), rest=RUNS.filter(r=>!isGateOpen(r));
   const states=RUNS.map(stateOf);
@@ -307,6 +330,7 @@ function render(){
   if(cnt("rejected"))chips.push(`<span class="schip"><span class="n">${cnt("rejected")}</span> rejected</span>`);
   if(cnt("done"))chips.push(`<span class="schip"><span class="n">${cnt("done")}</span> done</span>`);
   document.getElementById("strip").innerHTML=chips.join("")||"";
+  renderOverrides();
   const needsEl=document.getElementById("needs");
   if(needs.length){needsEl.innerHTML=`<h2>needs you <span class="count-pill">${needs.length}</span></h2><div class="grid">`+needs.map(card).join("")+`</div>`;needsEl.style.display="";}
   else needsEl.style.display="none";
@@ -316,6 +340,13 @@ function render(){
      RUNS.length?"":`<div class="empty">No runs yet. Start one with <span class="mono">/orchestrate &lt;topic&gt;</span> — it will appear here live.</div>`);
 }
 document.addEventListener("click",async e=>{
+  const panel=e.target.closest("[data-overrides-toggle]");
+  if(panel){overridesOpen=!overridesOpen;renderOverrides();return;}
+  const clearAll=e.target.closest("[data-override-clear-all]");
+  const clear=e.target.closest("[data-override-clear]");
+  const apply=e.target.closest("[data-override-apply]");
+  if(clearAll||clear){const role=clear&&clear.dataset.overrideClear;try{const res=await fetch("/api/overrides/clear",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(role?{role}:{})});if(!res.ok)throw new Error((await res.json()).error||"clear failed");overrideError="";await load();}catch(err){overrideError=err.message;renderOverrides();}return;}
+  if(apply){const role=apply.dataset.overrideApply,row=apply.closest("[data-override-role]"),select=row.querySelector('[data-field="model"]'),custom=row.querySelector("[data-custom-model]"),provider=row.querySelector('[data-field="provider"]'),effort=row.querySelector('[data-field="effort"]'),ttl=row.querySelector('[data-field="ttl"]');const model=select.value==="custom"?custom.value.trim():select.value;try{const res=await fetch("/api/overrides",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({role,model,provider:provider.value,effort:effort.value,ttl:Number(ttl.value)})});if(!res.ok)throw new Error((await res.json()).error||"apply failed");overrideError="";await load();}catch(err){overrideError=err.message;renderOverrides();}return;}
   const copy=e.target.closest("[data-copy-review]");
   if(copy){e.stopPropagation();
     try{await navigator.clipboard.writeText(copy.dataset.copyReview);copy.textContent="✓ copied review command";}
@@ -334,8 +365,9 @@ document.addEventListener("click",async e=>{
   const tog=e.target.closest("[data-toggle]");
   if(tog){open[tog.dataset.toggle]=!open[tog.dataset.toggle];render();}
 });
+document.addEventListener("change",e=>{const sel=e.target.closest('[data-field="model"]');if(sel){const input=sel.closest("[data-override-role]").querySelector("[data-custom-model]");input.classList.toggle("show",sel.value==="custom");if(sel.value!=="custom")input.value="";return;}const provider=e.target.closest('[data-field="provider"]');if(provider){const row=provider.closest("[data-override-role]"),model=row.querySelector('[data-field="model"]'),custom=row.querySelector("[data-custom-model]");model.value="custom";custom.classList.add("show");custom.value=provider.value==="claude"?"claude-sonnet-4-6":"gpt-5.6-sol";}});
 async function load(){
-  try{const res=await fetch("/api/runs",{cache:"no-store"});RUNS=await res.json();
+  try{const [res,overrideRes]=await Promise.all([fetch("/api/runs",{cache:"no-store"}),fetch("/api/overrides",{cache:"no-store"})]);RUNS=await res.json();const overrideData=await overrideRes.json();OVERRIDES=overrideData.overrides||{};
     const rank=r=>isGateOpen(r)?0:["dead","failed","stale"].includes(stateOf(r))?1:stateOf(r)==="live"?2:stateOf(r)==="handoff"?3:4;
     RUNS.sort((a,b)=>rank(a)-rank(b)||(b.updatedAt||0)-(a.updatedAt||0));
     render();document.getElementById("clock").textContent="updated "+new Date().toLocaleTimeString();}

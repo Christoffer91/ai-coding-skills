@@ -15,6 +15,10 @@ Claude plans and reviews; Codex critiques, implements, and applies review edits.
 - `--dry-run`: print commands and make no changes.
 - Installs, network/live-tenant calls, migrations, first push/PR, secrets, and deploy always require the applicable approval.
 
+### Temporary model overrides
+
+The dashboard's **model overrides** panel (or `orchestrate-status overrides set|get|clear`) stores temporary, machine-wide runtime state in `~/.orchestrate/overrides.json`; every override has a TTL (default four hours, maximum 72 hours) and applies only when a new critique or implementation step begins. Overrides replace the selected role's prior entry, take precedence over configured/environment effort while active, and are visibly recorded on the run. `critique` may use a provider-specific Claude model with tools disabled and no Codex fallback; `implement` remains Codex-only. The driver currently has no distinct `fix` model invocation, so fixes are intentionally not overrideable yet. Treat this localhost control as trusted-local-user state, never as repository configuration.
+
 For an in-session gate, call `PushNotification` once with an actionable sentence, then use `AskUserQuestion` for Approve/Reject/Edit. Remote Control is the phone path. The driver instead uses `ORCH_NOTIFY_CMD` (an executable path) or repo-local `notify_cmd` (a string path or argv array) from `.ai/orchestrate.toml`; the message is appended as one argument. It never uses a shell. macOS Notification Center is only a desktop fallback.
 
 ## Preconditions

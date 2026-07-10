@@ -3,13 +3,16 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import http.client
 import os
 from pathlib import Path
 import re
 import shutil
+import socketserver
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -23,6 +26,7 @@ if not DASHBOARD_DIR.exists():
     DASHBOARD_DIR = ROOT / "dashboard"
 STATUS = DASHBOARD_DIR / "orchestrate-status"
 DASHBOARD = DASHBOARD_DIR / "orchestrate-dashboard"
+OVERRIDES = DASHBOARD_DIR / "overrides.py"
 WATCHDOG = DASHBOARD_DIR / "orchestrate-watchdog"
 SYNC = ROOT / "scripts" / "sync-public.sh"
 CODEX_ORCHESTRATE = ROOT / "skills" / "codex" / "skills" / "orchestrate"
@@ -140,6 +144,59 @@ class EmitterTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
 
+class OverrideStoreTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.overrides = load_script("orchestrate_overrides_test", OVERRIDES)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Path(self.tmp.name) / "overrides.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_set_get_expiry_and_replacement_are_strict(self):
+        record = self.overrides.set_override(
+            {"role": "implement", "model": "gpt-5.5", "effort": "low", "ttl": 60},
+            now=100, store_path=self.store,
+        )
+        self.assertEqual(record["secondsLeft"], 60)
+        active = self.overrides.get_overrides(now=159, store_path=self.store)["overrides"]["implement"]
+        self.assertEqual(active["model"], "gpt-5.5")
+        self.assertEqual(active["secondsLeft"], 1)
+        self.overrides.set_override({"role": "implement", "effort": "high", "ttl": 60}, now=160, store_path=self.store)
+        replaced = self.overrides.get_overrides(now=160, store_path=self.store)["overrides"]["implement"]
+        self.assertNotIn("model", replaced, "updates must replace, not patch, a role entry")
+        self.assertEqual(self.overrides.get_overrides(now=220, store_path=self.store)["overrides"], {})
+
+    def test_validation_and_concurrent_updates_fail_closed(self):
+        bad = [
+            {"role": "fix", "effort": "low"},
+            {"role": "implement", "provider": "claude", "model": "claude-sonnet-4-6"},
+            {"role": "critique", "provider": "claude", "model": "gpt-5.5"},
+            {"role": "critique", "effort": "turbo"},
+            {"role": "critique", "effort": "low", "ttl": True},
+            {"role": "critique", "effort": "low", "ttl": 259201},
+        ]
+        for payload in bad:
+            with self.assertRaises(self.overrides.OverrideError):
+                self.overrides.set_override(payload, now=100, store_path=self.store)
+        errors: list[Exception] = []
+        def write(role: str, effort: str):
+            try:
+                self.overrides.set_override({"role": role, "effort": effort, "ttl": 60}, now=100, store_path=self.store)
+            except Exception as exc:  # pragma: no cover - assertion below retains the failure
+                errors.append(exc)
+        threads = [threading.Thread(target=write, args=("critique" if i % 2 else "implement", "low" if i % 3 else "high")) for i in range(16)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join()
+        self.assertEqual(errors, [])
+        data = json.loads(self.store.read_text())
+        self.assertEqual(data["version"], 1)
+        self.assertTrue(set(data["overrides"]).issubset({"critique", "implement"}))
+
+
 class DashboardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -215,6 +272,41 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("data-copy-review", html)
         self.assertIn("navigator.clipboard.writeText", html)
         self.assertIn("copy failed", html)
+
+    def test_overrides_api_uses_real_http_validation_and_serialization(self):
+        class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+        try:
+            server = Server(("127.0.0.1", 0), self.dashboard.Handler)
+        except PermissionError:
+            self.skipTest("sandbox disallows loopback listener required for HTTP integration coverage")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        def request(method: str, path: str, body: object | None = None, content_type: str = "application/json"):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            raw = json.dumps(body).encode() if body is not None else None
+            headers = {"Content-Type": content_type} if raw is not None else {}
+            conn.request(method, path, body=raw, headers=headers)
+            response = conn.getresponse()
+            result = response.status, json.loads(response.read())
+            conn.close()
+            return result
+        status, result = request("POST", "/api/overrides", {"role": "implement", "model": "gpt-5.5", "effort": "low", "ttl": 60})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["override"]["provider"], "codex")
+        status, result = request("GET", "/api/overrides")
+        self.assertEqual(status, 200)
+        self.assertGreater(result["overrides"]["implement"]["secondsLeft"], 0)
+        status, result = request("POST", "/api/overrides", {"role": "implement", "provider": "claude", "model": "claude-sonnet-4-6"})
+        self.assertEqual(status, 400)
+        self.assertIn("only for critique", result["error"])
+        status, result = request("POST", "/api/overrides", {"role": "critique"}, content_type="text/plain")
+        self.assertEqual(status, 400)
+        self.assertIn("Content-Type", result["error"])
 
 
 class WatchdogTests(unittest.TestCase):
@@ -406,6 +498,40 @@ exit 0
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("verify test (42s): python3 -m unittest", proc.stdout)
         self.assertIn("verify build (42s): 'tool with spaces' arg", proc.stdout)
+
+    def test_dry_run_uses_only_an_explicit_override_fixture_and_reverts_after_expiry(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        store = root / "override-fixture.json"
+        fixture_env = {**env, "ORCH_DRYRUN": "1", "ORCH_OVERRIDE_PATH": str(store)}
+        set_proc = run("python3", str(STATUS), "overrides", "set", "--role", "implement",
+                       "--model", "gpt-5.5", "--effort", "low", "--ttl", "60", env=fixture_env)
+        self.assertEqual(set_proc.returncode, 0, set_proc.stderr)
+        active = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root, env=fixture_env)
+        self.assertEqual(active.returncode, 0, active.stderr)
+        self.assertIn("-m gpt-5.5", active.stdout)
+        data = json.loads(store.read_text())
+        data["overrides"]["implement"]["expiresAt"] = 0
+        store.write_text(json.dumps(data))
+        expired = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root, env=fixture_env)
+        self.assertEqual(expired.returncode, 0, expired.stderr)
+        self.assertNotIn("-m gpt-5.5", expired.stdout)
+        no_fixture = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                         env={**env, "ORCH_DRYRUN": "1"})
+        self.assertEqual(no_fixture.returncode, 0, no_fixture.stderr)
+        self.assertNotIn("-m gpt-5.5", no_fixture.stdout)
+
+    def test_dry_run_prints_tool_disabled_claude_critique_argv(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        store = root / "override-fixture.json"
+        fixture_env = {**env, "ORCH_DRYRUN": "1", "ORCH_OVERRIDE_PATH": str(store)}
+        set_proc = run("python3", str(STATUS), "overrides", "set", "--role", "critique",
+                       "--provider", "claude", "--model", "claude-sonnet-4-6", "--ttl", "60", env=fixture_env)
+        self.assertEqual(set_proc.returncode, 0, set_proc.stderr)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root, env=fixture_env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("claude -p --model claude-sonnet-4-6 --permission-mode plan --tools '' --no-session-persistence", proc.stdout)
 
     def test_rejects_invalid_topic_and_effort(self):
         tmp, root, env = self.make_repo()

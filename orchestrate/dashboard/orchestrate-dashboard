@@ -8,13 +8,17 @@ serves an aggregate dashboard, and accepts click-to-answer gate responses
 Usage:  orchestrate-dashboard [--port 4600]      (env: ORCH_DASH_PORT)
 Binds to 127.0.0.1 only. No dependencies (Python 3 stdlib).
 """
-import http.server, socketserver, json, os, glob, time, argparse, urllib.parse, threading, subprocess, signal, re
+import http.server, socketserver, json, os, glob, time, argparse, urllib.parse, threading, subprocess, signal, re, sys
+from pathlib import Path
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
 RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import overrides
 HTML = os.path.join(HERE, "dashboard.html")
 STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "75"))  # no update for this long => "stalled?"
 RETENTION_SECS = 7 * 24 * 60 * 60
@@ -303,16 +307,53 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, json.dumps(load_runs()))
         elif p == "/api/health":
             self._send(200, json.dumps({"ok": True, "runs": len(load_runs())}))
+        elif p == "/api/overrides":
+            try:
+                self._send(200, json.dumps(overrides.get_overrides(store_path=Path(BASE) / "overrides.json")))
+            except overrides.OverrideError as exc:
+                self._send(500, json.dumps({"error": str(exc)}))
         else:
             self._send(404, "not found", "text/plain")
+
+    def _trusted_local_request(self):
+        host = self.headers.get("Host", "").split(":", 1)[0].lower()
+        origin = self.headers.get("Origin")
+        if host not in ("127.0.0.1", "localhost", "[::1]"):
+            return False
+        if origin:
+            parsed = urllib.parse.urlparse(origin)
+            if parsed.scheme != "http" or (parsed.hostname or "").lower() not in ("127.0.0.1", "localhost", "::1"):
+                return False
+        return True
+
+    def _json_body(self):
+        if not self._trusted_local_request():
+            raise ValueError("local requests only")
+        if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+            raise ValueError("Content-Type must be application/json")
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            raise ValueError("Content-Length required")
+        try:
+            size = int(raw)
+        except ValueError as exc:
+            raise ValueError("invalid Content-Length") from exc
+        if size < 0 or size > 8192:
+            raise ValueError("request body must be at most 8192 bytes")
+        try:
+            data = json.loads(self.rfile.read(size) or b"{}")
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("bad json") from exc
+        if not isinstance(data, dict):
+            raise ValueError("request body must be a JSON object")
+        return data
 
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
         try:
-            n = int(self.headers.get("Content-Length", 0))
-            data = json.loads(self.rfile.read(n) or b"{}")
-        except Exception:
-            return self._send(400, json.dumps({"error": "bad json"}))
+            data = self._json_body()
+        except ValueError as exc:
+            return self._send(400, json.dumps({"error": str(exc)}))
         rid = os.path.basename(str(data.get("id", "")))  # sanitize: no path traversal
         if p == "/api/answer":
             if not rid:
@@ -325,6 +366,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(*restart_or_kill(rid))
         elif p == "/api/kill":
             self._send(*restart_or_kill(rid, kill_only=True))
+        elif p == "/api/overrides":
+            try:
+                self._send(200, json.dumps({"override": overrides.set_override(
+                    data, store_path=Path(BASE) / "overrides.json")}))
+            except overrides.OverrideError as exc:
+                self._send(400, json.dumps({"error": str(exc)}))
+        elif p == "/api/overrides/clear":
+            try:
+                overrides.clear_overrides(role=data.get("role"), store_path=Path(BASE) / "overrides.json")
+                self._send(200, json.dumps({"ok": True}))
+            except overrides.OverrideError as exc:
+                self._send(400, json.dumps({"error": str(exc)}))
         else:
             self._send(404, "not found", "text/plain")
 
@@ -351,8 +404,10 @@ def main():
     os.makedirs(RUNS, exist_ok=True)
     os.makedirs(ANS, exist_ok=True)
     cleanup_retained_runs()
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", args.port), Handler) as srv:
+    class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+    with Server(("127.0.0.1", args.port), Handler) as srv:
         print(f"orchestrate dashboard → http://localhost:{args.port}   (runs: {RUNS})")
         try:
             srv.serve_forever()
