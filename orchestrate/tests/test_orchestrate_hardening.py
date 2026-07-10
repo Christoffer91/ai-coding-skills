@@ -411,7 +411,7 @@ exit 0
         self.assertNotEqual(bad_topic.returncode, 0)
         self.assertIn("invalid topic", bad_topic.stderr)
         bad_effort = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
-                         env={**env, "ORCH_DRYRUN": "1", "ORCH_EXEC_EFFORT": "ultra"})
+                         env={**env, "ORCH_DRYRUN": "1", "ORCH_EXEC_EFFORT": "turbo"})
         self.assertNotEqual(bad_effort.returncode, 0)
         self.assertIn("ORCH_EXEC_EFFORT", bad_effort.stderr)
         bad_run_id = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
