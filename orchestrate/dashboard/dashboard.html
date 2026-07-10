@@ -220,6 +220,7 @@ const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",
 function ago(sec){const s=Math.max(0,Math.round(Date.now()/1000-sec));if(s<60)return s+"s ago";const m=Math.round(s/60);if(m<60)return m+"m ago";const h=Math.floor(m/60);return h+"h "+(m%60)+"m ago";}
 function dur(sec){const m=Math.max(0,Math.round((Date.now()/1000-sec)/60));if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 function span(a,b){const s=Math.max(0,Math.round((b??Date.now()/1000)-a));if(s<60)return s+"s";const m=Math.round(s/60);if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
+function fmtTokens(n){n=Number(n);if(!isFinite(n)||n<=0)return"0";if(n>=1e6){const m=n/1e6;return (m>=10?Math.round(m):(m.toFixed(1).replace(/\.0$/,"")))+"M";}if(n>=1e3)return Math.round(n/1e3)+"K";return String(Math.round(n));}
 const curStep=r=>(r.steps||[]).find(s=>s.state==="active")||(r.steps||[]).slice().reverse().find(s=>s.state==="done")||(r.steps||[])[0];
 const isTerminal=r=>["done","failed","fail","rejected"].includes(r.status);
 const isGateOpen=r=>r.gate&&!isAns(r);
@@ -307,7 +308,8 @@ function card(r){
       <div><div class="lbl">step</div><div class="v">${r.step||0}/7</div></div>
       <div><div class="lbl">elapsed</div><div class="v">${r.startedAt?dur(r.startedAt):"—"}</div></div>
       <div><div class="lbl">updated</div><div class="v small">${r.updatedAt?ago(r.updatedAt):"—"}</div></div>
-      <div><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div></div>
+      <div><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div>
+      ${m["tokens.total"]?`<div><div class="lbl">tokens</div><div class="v small">${esc(fmtTokens(m["tokens.total"]))}</div></div>`:""}</div>
     <div class="chips"><span class="chip exec">${esc(executor)}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
       ${r.pr?`<a class="pr" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">${prTxt} ↗</a>`:`<span class="chip">${prTxt}</span>`}</div>
     ${gate}${actions}${detail(r)}</div>`;
@@ -329,6 +331,9 @@ function render(){
   if(cnt("handoff"))chips.push(`<span class="schip claude"><span class="n">${cnt("handoff")}</span> with claude</span>`);
   if(cnt("rejected"))chips.push(`<span class="schip"><span class="n">${cnt("rejected")}</span> rejected</span>`);
   if(cnt("done"))chips.push(`<span class="schip"><span class="n">${cnt("done")}</span> done</span>`);
+  const wk=Date.now()/1000-7*86400;
+  const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(Number((r.metrics||{})["tokens.total"])||0):0),0);
+  if(tok7d>0)chips.push(`<span class="schip" style="color:var(--faint)">≈${esc(fmtTokens(tok7d))} tokens · 7d</span>`);
   document.getElementById("strip").innerHTML=chips.join("")||"";
   renderOverrides();
   const needsEl=document.getElementById("needs");

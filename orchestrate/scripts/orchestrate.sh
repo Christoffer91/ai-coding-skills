@@ -8,7 +8,8 @@
 #
 # Env:
 #   ORCH_SANDBOX      Codex sandbox for implementation (default workspace-write)
-#   ORCH_EXEC_EFFORT  low|medium|high|xhigh (default medium)
+#   ORCH_EXEC_MODEL   implement model when no override is active (default gpt-5.6-terra)
+#   ORCH_EXEC_EFFORT  low|medium|high|xhigh|ultra (default ultra)
 #   ORCH_WORKTREE=1   create a dedicated worktree off origin/<default-branch>
 #   ORCH_STALL_KILL   seconds without Codex output before retry (default 300)
 #   ORCH_MAX_RETRY    retry count after a hung step (default 2)
@@ -42,7 +43,8 @@ TOPIC="${1:-}"
 PLAN="${2:-PLAN-${TOPIC}.md}"
 BRANCH="orch/${TOPIC}"
 SANDBOX="${ORCH_SANDBOX:-workspace-write}"
-EXEC_EFFORT="${ORCH_EXEC_EFFORT:-medium}"
+EXEC_MODEL="${ORCH_EXEC_MODEL:-gpt-5.6-terra}"
+EXEC_EFFORT="${ORCH_EXEC_EFFORT:-ultra}"
 EFFORT_SOURCE="default"
 [[ -n "${ORCH_EXEC_EFFORT+x}" ]] && EFFORT_SOURCE="env"
 WORKTREE="${ORCH_WORKTREE:-0}"
@@ -54,6 +56,8 @@ VERIFY_TIMEOUT="${ORCH_VERIFY_TIMEOUT:-900}"
 case "$EXEC_EFFORT" in low|medium|high|xhigh|ultra) ;; *)
   die "ORCH_EXEC_EFFORT must be one of: low, medium, high, xhigh, ultra" ;;
 esac
+[[ "$EXEC_MODEL" =~ ^[a-zA-Z0-9._-]{1,64}$ ]] || \
+  die "ORCH_EXEC_MODEL must match ^[a-zA-Z0-9._-]{1,64}\$"
 [[ "$VERIFY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "ORCH_VERIFY_TIMEOUT must be a positive integer"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch name: $BRANCH"
 git rev-parse --show-toplevel >/dev/null 2>&1 || die "not in a git repo"
@@ -174,7 +178,11 @@ print_step_command() { # <role> <sandbox> <effort>
     printf '+ claude -p --model %q --permission-mode plan --tools %q --no-session-persistence < <critique-prompt> > <critique>\n' "$OVERRIDE_MODEL" ""
   else
     printf '+ codex exec -s %q -c approval_policy=never' "$sandbox"
-    [[ -n "$OVERRIDE_MODEL" ]] && printf ' -m %q' "$OVERRIDE_MODEL"
+    if [[ -n "$OVERRIDE_MODEL" ]]; then
+      printf ' -m %q' "$OVERRIDE_MODEL"
+    elif [[ "$OVERRIDE_SOURCE" != "override" && "$role" == "implement" ]]; then
+      printf ' -m %q' "$EXEC_MODEL"
+    fi
     [[ -n "$OVERRIDE_EFFORT" ]] && printf ' -c model_reasoning_effort=%q' "$OVERRIDE_EFFORT"
     printf ' -o <output> - < <prompt>\n'
   fi
@@ -381,6 +389,25 @@ capture_session() {
   [[ -n "$session" ]] && emit metric --id "$RUN_ID" --key session --value "$session"
 }
 
+# Cumulative per-run token count across steps; Codex prints "tokens used" then the
+# running total on the next line. Best-effort only: every pipeline is guarded so a
+# missing pattern or malformed number can never fail the run (set -Eeuo pipefail).
+TOKENS_TOTAL=0
+capture_tokens() { # <log> <role>
+  local log="$1" role="$2" tokens=""
+  [[ -n "$role" && -f "$log" ]] || return 0
+  tokens="$(awk '
+    prev ~ /tokens used/ { s=$0; gsub(/[,[:space:]]/, "", s); if (s ~ /^[0-9]+$/) last=s }
+    { prev=$0 }
+    END { if (last != "") print last }
+  ' "$log" 2>/dev/null || true)"
+  [[ "$tokens" =~ ^[0-9]+$ ]] || return 0
+  TOKENS_TOTAL=$((TOKENS_TOTAL + 10#$tokens))
+  emit metric --id "$RUN_ID" --key "tokens.$role" --value "$tokens"
+  emit metric --id "$RUN_ID" --key "tokens.total" --value "$TOKENS_TOTAL"
+  return 0
+}
+
 codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
   local prompt_file="$1" out_file="$2" sandbox="$3" effort="$4" step_n="$5" role="$6"
   local attempt=1 max="${ORCH_MAX_RETRY:-2}" kill_after="${ORCH_STALL_KILL:-300}"
@@ -405,7 +432,11 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
     use_claude=1
   else
     cmd=(codex exec -s "$sandbox" -c approval_policy=never)
-    [[ -n "$OVERRIDE_MODEL" ]] && cmd+=(-m "$OVERRIDE_MODEL")
+    if [[ -n "$OVERRIDE_MODEL" ]]; then
+      cmd+=(-m "$OVERRIDE_MODEL")
+    elif [[ "$OVERRIDE_SOURCE" != "override" && "$role" == "implement" ]]; then
+      cmd+=(-m "$EXEC_MODEL")
+    fi
     [[ -n "$OVERRIDE_EFFORT" ]] && cmd+=(-c "model_reasoning_effort=$OVERRIDE_EFFORT")
     cmd+=(-o "$out_file" -)
   fi
@@ -449,7 +480,10 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
     if [[ "$hung" == "0" ]]; then
       if wait "$cpid"; then rc=0; else rc=$?; fi
       [[ "$use_claude" == "0" ]] && capture_session "$log"
-      [[ "$rc" -eq 0 ]] && return 0
+      if [[ "$rc" -eq 0 ]]; then
+        capture_tokens "$log" "$role"
+        return 0
+      fi
       echo "  $([[ "$use_claude" == "1" ]] && echo Claude || echo Codex) failed (log: $log)" >&2
       return "$rc"
     fi

@@ -11,8 +11,8 @@ Verified against Codex CLI `0.142.5` (ChatGPT-OAuth login; config defaults `mode
 - `--json` — JSONL event stream (thread.started, turn.*, item.*, error) for programmatic drivers.
 - `--output-schema <file>` — constrain the final answer to a JSON schema (use for machine-parsed step results).
 - `-C, --cd <dir>` / `--add-dir <dir>` — set the working root / extra writable dirs.
-- `-c model_reasoning_effort=low|medium|high|xhigh` — per-call effort override (default xhigh is already max; only step *down* for trivial diffs).
-- **Per-step effort in this loop:** critique (step 2) and PR review keep the config's `xhigh`; the mechanical implement (step 3) and fix (step 6) steps run at **`medium`** by default (configurable via `exec_effort` in `.ai/orchestrate.toml` or `ORCH_EXEC_EFFORT`). Rationale: coding a well-spec'd plan doesn't need max reasoning — it's faster and lighter on the ChatGPT plan, and the model is still gpt-5.6-sol.
+- `-c model_reasoning_effort=low|medium|high|xhigh|ultra` — per-call effort override.
+- **Per-step defaults in this loop:** critique (step 2) and PR review keep the config's default model (Sol) at `xhigh`/`ultra` — no `-m` flag. The mechanical implement (step 3) and fix (step 6) steps default to **`gpt-5.6-terra` at `ultra`** (via `ORCH_EXEC_MODEL` / `ORCH_EXEC_EFFORT`, or `exec_effort` in `.ai/orchestrate.toml`); terra·ultra lands near Sol Extra-High quality at ~1/3 the Sol Ultra cost. An active override from the dashboard overrides panel takes precedence over these env defaults while it lasts.
 
 ## Resume / threading
 - `codex exec resume <SESSION_ID> "<follow-up>"` — resume a specific session.

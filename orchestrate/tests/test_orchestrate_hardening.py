@@ -273,6 +273,16 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("navigator.clipboard.writeText", html)
         self.assertIn("copy failed", html)
 
+    def test_dashboard_renders_token_usage_with_escaping(self):
+        html = (DASHBOARD_DIR / "dashboard.html").read_text()
+        self.assertIn("function fmtTokens", html)
+        # per-run meta cell reads the accumulated total and escapes the formatted value
+        self.assertIn('m["tokens.total"]', html)
+        self.assertIn("esc(fmtTokens(m[\"tokens.total\"]))", html)
+        # dim 7d strip chip, hidden when zero
+        self.assertIn("tokens · 7d", html)
+        self.assertIn("if(tok7d>0)", html)
+
     def test_overrides_api_uses_real_http_validation_and_serialization(self):
         class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
             allow_reuse_address = True
@@ -454,6 +464,8 @@ elif test "$FAKE_CODEX_MODE" = source-only && test "$n" = 2; then
 else
   echo "session id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 fi
+printf 'tokens used\\n%s\\n' "1,200"
+printf 'tokens used\\n%s\\n' "$((n * 10000 + 440))"
 exit 0
 """)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
@@ -532,6 +544,62 @@ exit 0
         proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root, env=fixture_env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("claude -p --model claude-sonnet-4-6 --permission-mode plan --tools '' --no-session-persistence", proc.stdout)
+
+    def test_dry_run_defaults_implement_to_terra_ultra(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "ORCH_DRYRUN": "1"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        codex_lines = [line for line in proc.stdout.splitlines() if "-o <output>" in line]
+        self.assertEqual(len(codex_lines), 2, proc.stdout)
+        critique_line, implement_line = codex_lines
+        self.assertIn("-m gpt-5.6-terra", implement_line)
+        self.assertIn("model_reasoning_effort=ultra", implement_line)
+        # critique keeps the config default model — no injected -m
+        self.assertNotIn(" -m ", critique_line)
+
+    def test_orch_exec_model_validation_rejects_bad_strings(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        bad = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                  env={**env, "ORCH_DRYRUN": "1", "ORCH_EXEC_MODEL": "bad model!"})
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("ORCH_EXEC_MODEL", bad.stderr)
+        good = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "ORCH_DRYRUN": "1", "ORCH_EXEC_MODEL": "gpt-5.6-custom"})
+        self.assertEqual(good.returncode, 0, good.stderr)
+        self.assertIn("-m gpt-5.6-custom", good.stdout)
+
+    def test_active_override_beats_env_default_implement_model(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        store = root / "override-fixture.json"
+        fixture_env = {**env, "ORCH_DRYRUN": "1", "ORCH_OVERRIDE_PATH": str(store),
+                       "ORCH_EXEC_MODEL": "gpt-5.6-terra"}
+        set_proc = run("python3", str(STATUS), "overrides", "set", "--role", "implement",
+                       "--model", "gpt-5.5", "--effort", "low", "--ttl", "60", env=fixture_env)
+        self.assertEqual(set_proc.returncode, 0, set_proc.stderr)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root, env=fixture_env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("-m gpt-5.5", proc.stdout)
+        self.assertNotIn("gpt-5.6-terra", proc.stdout)
+
+    def test_tokens_parsed_from_codex_log_and_accumulated(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        remote = Path(tmp.name) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+        subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1"})
+        self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}")
+        metrics = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
+        # last "tokens used" figure per attempt wins (1,200 decoy ignored), commas stripped
+        self.assertEqual(metrics["tokens.critique"], "10440")
+        self.assertEqual(metrics["tokens.implement"], "20440")
+        self.assertEqual(metrics["tokens.total"], "30880")
 
     def test_rejects_invalid_topic_and_effort(self):
         tmp, root, env = self.make_repo()
