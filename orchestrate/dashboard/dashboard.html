@@ -61,6 +61,7 @@
   .clockline{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;font-family:var(--mono)}
   .clockline .dot{width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse 2.4s infinite}
   .clockline.off .dot{background:var(--fail);animation:none}
+  a.themebtn{text-decoration:none;display:inline-flex;align-items:center}
   .themebtn{font-family:var(--mono);font-size:12px;font-weight:650;color:var(--muted);background:var(--surface);
     border:1px solid var(--border);border-radius:9px;padding:6px 11px;cursor:pointer}
   .themebtn:hover{border-color:var(--border-strong);color:var(--ink)}
@@ -349,6 +350,7 @@
       <div class="sub"><b class="c1">Claude</b> plans &amp; reviews · <b class="c2">Codex</b> (gpt-5.6-sol) executes · every run on this machine</div>
     </div>
     <div class="hright">
+      <a class="themebtn" href="/watch" title="Terminal-style overview (per-run console links)">⌗ watch</a>
       <div class="clockline" id="clockline"><span class="dot"></span><span id="clock">connecting…</span></div>
       <button class="themebtn" id="notifbtn" title="Desktop notification when a run needs you or dies">notify: off</button>
       <button class="themebtn" id="themebtn" title="Cycle theme">◐ auto</button>
@@ -501,6 +503,7 @@ function card(r,compact){
       ${m["tokens.total"]?`<div><div class="lbl">tokens</div><div class="v small">${esc(fmtTokens(m["tokens.total"]))}</div></div>`:""}
       ${runTok(r)?`<div><div class="lbl">tokens</div><div class="v small">${fmtTok(runTok(r))}</div></div>`:""}</div>
     <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.6-sol")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
+      ${!["done","failed"].includes(st)?`<a class="pr" href="/console?id=${encodeURIComponent(r.id)}" title="Live console output for this run">console ↗</a>`:""}
       ${prBit(r)}</div>`;
   return `<div class="card ${open[r.id]?'open':''} ${compact?'compact':''}" data-id="${esc(r.id)}" style="border-left:4px solid ${edge}">
     <div class="head" data-toggle="${esc(r.id)}" tabindex="0" role="button" aria-expanded="${!!open[r.id]}">
