@@ -29,8 +29,8 @@ For an in-session gate, call `PushNotification` once with an actionable sentence
 
 1. Write or validate `PLAN-<topic>.md` with acceptance criteria, constraints, risks, and checks.
 2. Critique it with Codex in `read-only`; fold valid findings into execution.
-3. Implement on `orch/<topic>` in `workspace-write`, run tests/lint/build, and capture the exact Codex session ID. In a linked worktree Codex does not stage or commit; the driver does so after implementation.
-4. Before push, the driver scans the implementation result for `⛔ APPROVAL-REQUEST: <action> — <why>`. This marker blocks push/PR; in a non-worktree run Codex may already have committed locally. The gate offers `Approve and continue` or `Reject and stop`. Timeout preserves `awaiting_approval`; resume from the recorded cwd without rerunning Codex:
+3. Implement on `orch/<topic>` in `workspace-write`, run tests/lint/build, and capture the exact Codex session ID. In a linked worktree Codex does not stage or commit; the driver does so after implementation. In normal mode verification may therefore follow Codex's local commit, but it always precedes push.
+4. Before push, the driver scans the implementation result for `⛔ APPROVAL-REQUEST: <action> — <why>`. This marker blocks push/PR; in a non-worktree run Codex may already have committed locally. After any approval, the driver independently runs configured `test_cmd`, `build_cmd`, and `eval_cmd` commands. One failure resumes the exact Codex session for a single repair, then the driver reruns the full verify gate. The gate offers `Approve and continue` or `Reject and stop`. Timeout preserves `awaiting_approval`; resume from the recorded cwd without rerunning Codex:
 
 ```bash
 scripts/orchestrate.sh --resume --timeout 0 <topic> PLAN-<topic>.md
@@ -44,7 +44,7 @@ Invoke `/orchestrate review <topic>` in the repo. From another cwd use `/orchest
 
 1. Resolve the repo root, then select the single run JSON whose topic matches and whose recorded repo/worktree belongs to that git common directory. If zero or multiple match, stop and request the exact run ID; topic alone must never guess across repos.
 2. Require `status=handoff`, a PR number/URL, implementation session ID, review metadata, and a readable absolute baton path. Verify the baton topic/PR/branch agrees with run JSON and `gh pr view`; reject stale or mismatched metadata.
-3. Set step 5 active and review `gh pr diff <n>` for correctness, taste, security, tests, and contract. Categorize blocking/notable/nit.
+3. Set step 5 active and review `gh pr diff <n>` for correctness, taste, security, tests, and contract. Categorize blocking/notable/nit. At the end of each review pass, record integer outcome counts with `orchestrate-status metric --id <id> --key review.blocking --value N` and `--key review.notable --value N`.
 4. With no blocking findings, continue to step 7. Otherwise increment `review.iteration` in run JSON and resume the exact implementation session:
 
 ```bash
@@ -77,6 +77,6 @@ Also call `PushNotification` and `AskUserQuestion` for in-session gates; the loc
 - Default to `workspace-write`; use bypass mode only in a disposable worktree.
 - Resume the recorded session ID, never a most-recent-session shortcut.
 - Never store secrets in plans, batons, run JSON, notifier configuration, or output.
-- Report mode, step reached, branch/PR, critique changes, review counts/iteration, risk/deploy state, and one concrete next action.
+- Report mode, step reached, branch/PR, critique changes, recorded blocking/notable review counts and iteration, risk/deploy state, and one concrete next action.
 
 References: `references/auto-deploy-safety.md`, `references/loop-mechanics.md`, `references/desktop-mcp-bridge.md`, and `dashboard/README.md`.

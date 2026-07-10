@@ -16,6 +16,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "scripts" / "orchestrate.sh"
+VERIFY_HELPER = ROOT / "scripts" / "orchestrate_verify.py"
 DASHBOARD_DIR = ROOT / "skills/orchestrate/dashboard"
 if not DASHBOARD_DIR.exists():
     DASHBOARD_DIR = ROOT / "dashboard"
@@ -225,6 +226,68 @@ class WatchdogTests(unittest.TestCase):
         kill.assert_not_called()
 
 
+class VerifyHelperTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.verify = load_script("orchestrate_verify_test", VERIFY_HELPER)
+
+    def test_toml_string_and_argv_forms_are_strict_and_shell_free(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "orchestrate.toml"
+            config.write_text(
+                'test_cmd = "python3 -c \'print(1)\'"\n'
+                'build_cmd = ["tool with spaces", "literal;", "*.py"]\n'
+            )
+            commands = self.verify.load_commands(config)
+            self.assertEqual(commands["test"], ["python3", "-c", "print(1)"])
+            self.assertEqual(commands["build"], ["tool with spaces", "literal;", "*.py"])
+            tool = Path(td) / "tool with spaces"
+            executable(tool, "#!/bin/sh\nexit 0\n")
+            result = self.verify.run_command([str(tool), "literal;", "*.py"], Path(td), Path(td) / "run.log", 2)
+            self.assertEqual(result["status"], "pass")
+            missing = self.verify.run_command([str(Path(td) / "missing")], Path(td), Path(td) / "missing.log", 2)
+            self.assertEqual(missing["status"], "error")
+            self.assertEqual(self.verify.load_commands(Path(td) / "missing.toml"), {})
+            config.write_text("test_cmd = []\n")
+            with self.assertRaises(self.verify.ConfigError):
+                self.verify.load_commands(config)
+            config.write_text("test_cmd = 42\n")
+            with self.assertRaises(self.verify.ConfigError):
+                self.verify.load_commands(config)
+            config.write_text('test_cmd = "unterminated\n')
+            with self.assertRaises(self.verify.ConfigError):
+                self.verify.load_commands(config)
+
+    def test_timeout_kills_command_process_group(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            child_pid = base / "child.pid"
+            command = base / "spawn-child"
+            executable(command, f'#!/bin/sh\nsleep 30 &\necho $! > "{child_pid}"\nwait\n')
+            result = self.verify.run_command([str(command)], base, base / "verify.log", 1)
+            self.assertEqual(result["status"], "timeout")
+            pid = int(child_pid.read_text())
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("timed-out verification child was not killed")
+
+    def test_test_delta_classifies_source_tests_and_non_source(self):
+        classify = self.verify.classify_paths
+        self.assertEqual(classify(["src/app.py"]), "src-only")
+        self.assertEqual(classify(["src/app.py", "tests/test_app.py"]), "src+tests")
+        self.assertEqual(classify(["pkg/app.go", "pkg/app_test.go"]), "src+tests")
+        self.assertEqual(classify(["tests/test_app.py"]), "tests-only")
+        self.assertEqual(classify(["src/types.test.d.ts"]), "tests-only")
+        self.assertEqual(classify(["README.md", "config/settings.toml"]), "non-source")
+        self.assertEqual(classify(["src/old.py", "tests/renamed.spec.ts"]), "src+tests")
+
+
 class DriverTests(unittest.TestCase):
     def make_repo(self) -> tuple[tempfile.TemporaryDirectory, Path, dict[str, str]]:
         tmp = tempfile.TemporaryDirectory()
@@ -232,6 +295,8 @@ class DriverTests(unittest.TestCase):
         root.mkdir()
         (root / "scripts").mkdir()
         shutil.copy2(DRIVER, root / "scripts/orchestrate.sh")
+        shutil.copy2(VERIFY_HELPER, root / "scripts/orchestrate_verify.py")
+        (root / ".gitignore").write_text(".ai/\n")
         status_dir = root / "skills/orchestrate/dashboard"
         status_dir.mkdir(parents=True)
         os.symlink(STATUS, status_dir / "orchestrate-status")
@@ -275,6 +340,21 @@ elif test "$FAKE_CODEX_MODE" = success && test "$n" = 2; then
   git add implementation.txt
   git commit -qm "implement fixture"
   echo "session id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+elif test "$FAKE_CODEX_MODE" = verify-repair && test "$n" = 2; then
+  echo broken > verify.state
+  git add verify.state
+  git commit -qm "implement broken fixture"
+  echo "session id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+elif test "$FAKE_CODEX_MODE" = verify-repair && test "$n" = 3; then
+  case "$prompt" in *"driver is the sole verifier"*) ;; *) exit 10 ;; esac
+  echo fixed > verify.state
+  echo "session id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+elif test "$FAKE_CODEX_MODE" = source-only && test "$n" = 2; then
+  mkdir -p src
+  echo 'value = 1' > src/app.py
+  git add src/app.py
+  git commit -qm "implement source fixture"
+  echo "session id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 else
   echo "session id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 fi
@@ -311,6 +391,18 @@ exit 0
         self.assertFalse((Path(env["HOME"]) / ".orchestrate").exists())
         self.assertEqual(run("git", "branch", "--show-current", cwd=root, check=True).stdout.strip(), "main")
 
+    def test_dry_run_lists_configured_verify_commands(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        config.write_text('test_cmd = "python3 -m unittest"\nbuild_cmd = ["tool with spaces", "arg"]\n')
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "ORCH_DRYRUN": "1", "ORCH_VERIFY_TIMEOUT": "42"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("verify test (42s): python3 -m unittest", proc.stdout)
+        self.assertIn("verify build (42s): 'tool with spaces' arg", proc.stdout)
+
     def test_rejects_invalid_topic_and_effort(self):
         tmp, root, env = self.make_repo()
         self.addCleanup(tmp.cleanup)
@@ -326,6 +418,10 @@ exit 0
                          env={**env, "ORCH_DRYRUN": "1", "ORCH_RUN_ID": "../escape"})
         self.assertNotEqual(bad_run_id.returncode, 0)
         self.assertIn("invalid ORCH_RUN_ID", bad_run_id.stderr)
+        bad_timeout = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                          env={**env, "ORCH_DRYRUN": "1", "ORCH_VERIFY_TIMEOUT": "0"})
+        self.assertNotEqual(bad_timeout.returncode, 0)
+        self.assertIn("ORCH_VERIFY_TIMEOUT", bad_timeout.stderr)
 
     def test_duplicate_live_run_is_rejected(self):
         tmp, root, env = self.make_repo()
@@ -367,6 +463,86 @@ exit 0
         self.assertIn("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", baton)
         self.assertIn("codex exec resume", baton)
 
+    def test_verify_pass_runs_before_push_and_records_metric(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        command = [
+            "python3", "-c",
+            "from pathlib import Path; assert Path('implementation.txt').is_file(); Path('generated.py').write_text('generated = True\\n')",
+        ]
+        config.write_text(f"test_cmd = {json.dumps(command)}\n")
+        remote = Path(tmp.name) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+        subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1"})
+        self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}")
+        data = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())
+        self.assertEqual(data["metrics"]["verify"], "test=pass")
+        self.assertTrue((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/verify-test.log").is_file())
+
+    def test_verify_failure_resumes_once_then_fails_without_push_or_duplicate_notification(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        config.write_text('test_cmd = ["python3", "-c", "import sys; print(\'still broken\'); sys.exit(7)"]\n')
+        remote = Path(tmp.name) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+        subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        notify_log = Path(tmp.name) / "notify.log"
+        hook = Path(tmp.name) / "notify"
+        executable(hook, '#!/bin/sh\nprintf "%s\\n" "$1" >> "$NOTIFY_LOG"\n')
+        proc = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+            env={**env, "FAKE_CODEX_MODE": "success", "ORCH_NOTIFY_CMD": str(hook),
+                 "ORCH_NOTIFY_DISABLE": "0", "NOTIFY_LOG": str(notify_log)},
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("still failing after one repair", proc.stderr)
+        self.assertEqual((Path(env["HOME"]) / "codex-count").read_text().strip(), "3")
+        self.assertEqual(len(notify_log.read_text().splitlines()), 1)
+        remote_branch = run("git", "--git-dir", str(remote), "show-ref", "--verify", "refs/heads/orch/t")
+        self.assertNotEqual(remote_branch.returncode, 0)
+
+    def test_verify_successful_repair_is_reverified_committed_and_pushed(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        command = ["python3", "-c", "from pathlib import Path; assert Path('verify.state').read_text().strip() == 'fixed'"]
+        config.write_text(f"test_cmd = {json.dumps(command)}\n")
+        remote = Path(tmp.name) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+        subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "FAKE_CODEX_MODE": "verify-repair", "FAKE_GH_PR": "1"})
+        self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}")
+        self.assertEqual((Path(env["HOME"]) / "codex-count").read_text().strip(), "3")
+        self.assertEqual(run("git", "show", "HEAD:verify.state", cwd=root, check=True).stdout, "fixed\n")
+        data = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())
+        self.assertEqual(data["metrics"]["verify"], "test=pass")
+
+    def test_source_without_tests_adds_review_warning_and_metric(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        remote = Path(tmp.name) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+        subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "FAKE_CODEX_MODE": "source-only", "FAKE_GH_PR": "1"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())
+        self.assertEqual(data["metrics"]["testDelta"], "src-only")
+        baton = (root / "HANDOFF-CLAUDE-review-t.md").read_text()
+        self.assertIn("diff changes source but no tests", baton)
+
     def test_worktree_mode_driver_commits_codex_changes(self):
         tmp, root, env = self.make_repo()
         self.addCleanup(tmp.cleanup)
@@ -377,6 +553,13 @@ exit 0
         subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
         subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
         subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        command = [
+            "python3", "-c",
+            "from pathlib import Path; assert Path('implementation.txt').is_file(); Path('generated.py').write_text('generated = True\\n')",
+        ]
+        config.write_text(f"test_cmd = {json.dumps(command)}\n")
         proc = run(
             "bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
             env={**env, "ORCH_WORKTREE": "1", "FAKE_CODEX_MODE": "worktree", "FAKE_GH_PR": "1"},
@@ -389,7 +572,10 @@ exit 0
             self.assertEqual(subject, "orchestrate: worktree fixture")
             self.assertEqual(run("git", "show", "HEAD:implementation.txt", cwd=worktree, check=True).stdout,
                              "implemented\n")
+            self.assertEqual(run("git", "show", "HEAD:generated.py", cwd=worktree, check=True).stdout,
+                             "generated = True\n")
             self.assertEqual(run("git", "ls-files", "PLAN-t.md", cwd=worktree, check=True).stdout, "")
+            self.assertEqual(data["metrics"]["verify"], "test=pass")
         finally:
             subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
                            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -401,6 +587,9 @@ exit 0
         subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
         subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
         subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        config.write_text('test_cmd = ["python3", "-c", "from pathlib import Path; assert Path(\'implementation.txt\').is_file()"]\n')
         first = run(
             "bash", str(root / "scripts/orchestrate.sh"), "--timeout", "1", "t", "PLAN-t.md", cwd=root,
             env={**env, "ORCH_WORKTREE": "1", "FAKE_CODEX_MODE": "approval-worktree"},
@@ -428,6 +617,7 @@ exit 0
             self.assertEqual((Path(env["HOME"]) / "codex-count").read_text().strip(), "2")
             finished = json.loads(status_path.read_text())
             self.assertEqual(finished["status"], "handoff")
+            self.assertEqual(finished["metrics"]["verify"], "test=pass")
             self.assertEqual(finished["review"]["command"], "/orchestrate review t")
             self.assertTrue(Path(finished["review"]["baton"]).is_file())
         finally:
@@ -497,6 +687,7 @@ class SyncScriptTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(scan_log.read_text().strip(), "scanned")
             self.assertTrue((target / "orchestrate/scripts/orchestrate.sh").exists())
+            self.assertTrue((target / "orchestrate/scripts/orchestrate_verify.py").exists())
             self.assertTrue((target / "orchestrate/tests/test_orchestrate_hardening.py").exists())
             self.assertTrue((target / "orchestrate/contract/keep.txt").exists())
             self.assertEqual(list((target / "orchestrate").rglob("*.pyc")), [])

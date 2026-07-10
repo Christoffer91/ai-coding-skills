@@ -14,6 +14,7 @@
 #   ORCH_MAX_RETRY    retry count after a hung step (default 2)
 #   ORCH_TITLE        dashboard card title (default topic)
 #   ORCH_GATE_TIMEOUT seconds to wait for a gate; 0 waits forever (default 0)
+#   ORCH_VERIFY_TIMEOUT seconds allowed per configured verify command (default 900)
 #   ORCH_DRYRUN=1     print the command plan without writes, auth, fetch, or emit
 set -Eeuo pipefail
 
@@ -45,10 +46,12 @@ WORKTREE="${ORCH_WORKTREE:-0}"
 DRY="${ORCH_DRYRUN:-0}"
 RESTART="${ORCH_RESTART:-0}"
 DEDICATED_WORKTREE="${ORCH_DEDICATED_WORKTREE:-$WORKTREE}"
+VERIFY_TIMEOUT="${ORCH_VERIFY_TIMEOUT:-900}"
 
 case "$EXEC_EFFORT" in low|medium|high|xhigh) ;; *)
   die "ORCH_EXEC_EFFORT must be one of: low, medium, high, xhigh" ;;
 esac
+[[ "$VERIFY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "ORCH_VERIFY_TIMEOUT must be a positive integer"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch name: $BRANCH"
 git rev-parse --show-toplevel >/dev/null 2>&1 || die "not in a git repo"
 [[ -f "$PLAN" ]] || die "plan file not found: $PLAN"
@@ -56,11 +59,29 @@ git rev-parse --show-toplevel >/dev/null 2>&1 || die "not in a git repo"
 PLAN_ABS="$(cd "$(dirname "$PLAN")" && pwd)/$(basename "$PLAN")"
 ORIG_ROOT="$(git rev-parse --show-toplevel)"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+VERIFY_HELPER="$(dirname "$SELF")/orchestrate_verify.py"
+[[ -f "$VERIFY_HELPER" ]] || die "verify helper not found: $VERIFY_HELPER"
+VERIFY_PYTHON="${ORCH_PYTHON:-}"
+if [[ -n "$VERIFY_PYTHON" ]]; then
+  command -v "$VERIFY_PYTHON" >/dev/null 2>&1 || die "ORCH_PYTHON not found: $VERIFY_PYTHON"
+else
+  for candidate in python3 python3.14 python3.13 python3.12 python3.11; do
+    candidate_path="$(command -v "$candidate" 2>/dev/null || true)"
+    [[ -n "$candidate_path" ]] || continue
+    if "$candidate_path" -c 'import importlib.util; assert importlib.util.find_spec("tomllib") or importlib.util.find_spec("tomli")' >/dev/null 2>&1; then
+      VERIFY_PYTHON="$candidate_path"
+      break
+    fi
+  done
+fi
+[[ -n "$VERIFY_PYTHON" ]] || die "verify gate requires Python 3.11+ with tomllib (or Python with tomli)"
 SELF_REL=""
 [[ "$SELF" == "$ORIG_ROOT/"* ]] && SELF_REL="${SELF#"$ORIG_ROOT/"}"
 REPO_NAME="${ORCH_REPO_NAME:-$(basename "$ORIG_ROOT")}"
 BATON_ROOT="${ORCH_BATON_ROOT:-$ORIG_ROOT}"
 RUN_ID="${ORCH_RUN_ID:-$REPO_NAME-$TOPIC}"
+CONFIG_ROOT="$ORIG_ROOT"
+VERIFY_CONFIG="$CONFIG_ROOT/.ai/orchestrate.toml"
 
 if [[ "$RESUME" == "1" && -z "${ORCH_RUN_ID:-}" ]]; then
   resolved_id="$(python3 - "$HOME/.orchestrate/runs" "$TOPIC" "$(pwd -P)" <<'PY'
@@ -99,6 +120,14 @@ if [[ "$DRY" == "1" ]]; then
   echo "+ codex exec -s read-only -c approval_policy=never -o <critique> - < <critique-prompt>"
   [[ "$WORKTREE" == "1" ]] || echo "+ git switch -c '$BRANCH'  # or reuse the existing task branch"
   echo "+ codex exec -s '$SANDBOX' -c approval_policy=never -c model_reasoning_effort='$EXEC_EFFORT' -o <implementation> - < <implementation-prompt>"
+  VERIFY_NAMES="$("$VERIFY_PYTHON" "$VERIFY_HELPER" configured --config "$VERIFY_CONFIG")" || \
+    die "invalid verify configuration: $VERIFY_CONFIG"
+  while IFS= read -r verify_name; do
+    [[ -n "$verify_name" ]] || continue
+    verify_display="$("$VERIFY_PYTHON" "$VERIFY_HELPER" display --config "$VERIFY_CONFIG" --name "$verify_name")" || \
+      die "invalid verify configuration: $VERIFY_CONFIG"
+    echo "+ verify $verify_name (${VERIFY_TIMEOUT}s): $verify_display"
+  done <<< "$VERIFY_NAMES"
   echo "+ git push -u origin '$BRANCH'"
   echo "+ gh pr create --base '$BASE' --head '$BRANCH' --fill"
   exit 0
@@ -196,10 +225,20 @@ with open(sys.argv[1]) as fh:
 print(((run.get("restart") or {}).get("env") or {}).get("ORCH_BATON_ROOT", ""))
 PY
   )"
+  recorded_repo_root="$(python3 - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    print(json.load(fh).get("repoRoot", ""))
+PY
+  )"
   [[ "$(pwd -P)" == "$recorded_cwd" ]] || die "resume must run from recorded cwd: $recorded_cwd"
   [[ "$(git branch --show-current)" == "$recorded_branch" ]] || die "resume expected branch '$recorded_branch'"
   DEDICATED_WORKTREE="$recorded_worktree"
   [[ -z "$recorded_baton_root" ]] || BATON_ROOT="$recorded_baton_root"
+  if [[ -n "$recorded_repo_root" ]]; then
+    CONFIG_ROOT="$recorded_repo_root"
+    VERIFY_CONFIG="$CONFIG_ROOT/.ai/orchestrate.toml"
+  fi
   MADE_BRANCH=1
 elif [[ "$RESTART" == "1" ]]; then
   [[ "$DEDICATED_WORKTREE" == "1" ]] || die "automatic restart is allowed only in a recorded dedicated worktree"
@@ -247,6 +286,8 @@ START_ARGS+=(--env "ORCH_SANDBOX=$SANDBOX"
   --env "ORCH_EXEC_EFFORT=$EXEC_EFFORT"
   --env "ORCH_STALL_KILL=${ORCH_STALL_KILL:-300}"
   --env "ORCH_MAX_RETRY=${ORCH_MAX_RETRY:-2}"
+  --env "ORCH_VERIFY_TIMEOUT=$VERIFY_TIMEOUT"
+  --env "ORCH_PYTHON=$VERIFY_PYTHON"
   --env "ORCH_TITLE=${ORCH_TITLE:-$TOPIC}"
   --env "ORCH_RUN_ID=$RUN_ID"
   --env "ORCH_REPO_NAME=$REPO_NAME"
@@ -335,10 +376,86 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n>
   done
 }
 
+codex_resume_fix() { # <session-id> <prompt-file> <out-file>
+  local session="$1" prompt_file="$2" out_file="$3"
+  local kill_after="${ORCH_STALL_KILL:-300}" log cpid last_size=-1 idle=0 size rc=0
+  local worker_start worker_pgid
+  local -a cmd=(codex exec resume -c approval_policy=never
+    -c "model_reasoning_effort=$EXEC_EFFORT" -o "$out_file" "$session" -)
+  log="$(mktemp -t orch-resume-XXXX).log"
+  "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
+  cpid=$!
+  worker_start="$(proc_start "$cpid" || true)"
+  worker_pgid="$(proc_pgid "$cpid" || true)"
+  if [[ -n "$worker_start" && "$worker_pgid" =~ ^[0-9]+$ ]]; then
+    emit worker --id "$RUN_ID" --pid "$cpid" --pid-start "$worker_start" --pgid "$worker_pgid" --cwd "$(pwd -P)"
+  fi
+  while kill -0 "$cpid" 2>/dev/null; do
+    sleep 1
+    size="$(wc -c <"$log" 2>/dev/null || echo 0)"
+    if [[ "$size" != "$last_size" ]]; then
+      last_size="$size"; idle=0; emit heartbeat --id "$RUN_ID" --pid "$$"
+    else
+      idle=$((idle + 1))
+    fi
+    if (( idle >= kill_after )); then
+      pkill -9 -P "$cpid" 2>/dev/null || true
+      kill -9 "$cpid" 2>/dev/null || true
+      wait "$cpid" 2>/dev/null || true
+      echo "  Codex repair produced no output for ${kill_after}s (log: $log)" >&2
+      return 124
+    fi
+  done
+  if wait "$cpid"; then rc=0; else rc=$?; fi
+  capture_session "$log"
+  if [[ "$rc" -ne 0 ]]; then
+    echo "  Codex repair failed (log: $log)" >&2
+  fi
+  return "$rc"
+}
+
 ARTIFACT_DIR="$HOME/.orchestrate/artifacts/$RUN_ID"
 mkdir -p "$ARTIFACT_DIR"
 CRIT="$ARTIFACT_DIR/critique.md"
 IMPL="$ARTIFACT_DIR/implementation.md"
+VERIFY_FAILED_NAME=""
+VERIFY_FAILED_DISPLAY=""
+VERIFY_FAILED_LOG=""
+
+run_verification() {
+  local names name shown summary rc metric=""
+  if ! names="$("$VERIFY_PYTHON" "$VERIFY_HELPER" configured --config "$VERIFY_CONFIG")"; then
+    return 2
+  fi
+  if [[ -z "$names" ]]; then
+    emit metric --id "$RUN_ID" --key verify --value "none"
+    echo "   verify gate: no commands configured"
+    return 0
+  fi
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    shown="$("$VERIFY_PYTHON" "$VERIFY_HELPER" display --config "$VERIFY_CONFIG" --name "$name")" || return 2
+    summary="$ARTIFACT_DIR/verify-${name}.json"
+    echo "   verifying: $shown"
+    emit step --id "$RUN_ID" --n 3 --state active --note "verifying: ${shown:0:100}"
+    if "$VERIFY_PYTHON" "$VERIFY_HELPER" run --config "$VERIFY_CONFIG" --name "$name" \
+      --workdir "$(pwd -P)" --artifact-dir "$ARTIFACT_DIR" \
+      --timeout "$VERIFY_TIMEOUT" --summary "$summary"; then
+      metric="${metric:+$metric }${name}=pass"
+    else
+      rc=$?
+      [[ "$rc" -eq 1 ]] || return 2
+      VERIFY_FAILED_NAME="$name"
+      VERIFY_FAILED_DISPLAY="$shown"
+      VERIFY_FAILED_LOG="$ARTIFACT_DIR/verify-${name}.log"
+      metric="${metric:+$metric }${name}=fail"
+      emit metric --id "$RUN_ID" --key verify --value "$metric"
+      return 1
+    fi
+  done <<< "$names"
+  emit metric --id "$RUN_ID" --key verify --value "$metric"
+  return 0
+}
 
 if [[ "$RESUME" != "1" ]]; then
   echo "== orchestrate: $TOPIC =="
@@ -434,18 +551,44 @@ PY
   python3 "$STATUS_BIN" checkpoint --id "$RUN_ID" --name approval_granted \
     --continuation push_pr >/dev/null || die "could not persist approved continuation"
 fi
-if [[ "$DEDICATED_WORKTREE" == "1" ]]; then
-  COMMIT_SUBJECT="$(awk 'NF { line=$0 } END { print line }' "$IMPL" | tr -d '\r')"
-  [[ -n "$COMMIT_SUBJECT" ]] || COMMIT_SUBJECT="orchestrate: $TOPIC"
-  COMMIT_SUBJECT="${COMMIT_SUBJECT:0:200}"
-  git add -A -- ':!PLAN-*.md' || die "driver could not stage worktree changes"
-  if git diff --cached --quiet; then
-    ALREADY_AHEAD="$(git rev-list --count "origin/$BASE..HEAD" 2>/dev/null || echo 0)"
-    [[ "$RESUME" == "1" && "$ALREADY_AHEAD" -ge 1 ]] || \
-      die "Codex changed nothing in the worktree (see $IMPL) — aborting."
+
+echo "-- [3/4] independent verify gate"
+if run_verification; then
+  :
+else
+  verify_rc=$?
+  [[ "$verify_rc" -eq 1 ]] || die "invalid verify configuration: $VERIFY_CONFIG"
+  echo "   $VERIFY_FAILED_NAME verification failed; resuming Codex once (log: $VERIFY_FAILED_LOG)" >&2
+  emit step --id "$RUN_ID" --n 3 --state active --note "verify failed: $VERIFY_FAILED_NAME; one repair attempt"
+  VPROMPT="$(mktemp -t orch-vprompt-XXXX).md"
+  VOUT="$ARTIFACT_DIR/verify-repair.md"
+  {
+    printf 'Independent verification failed for this command:\n  %s\n\n' "$VERIFY_FAILED_DISPLAY"
+    printf 'Fix the underlying code or configuration only. Do not run the verification command yourself; the driver is the sole verifier and will rerun all configured commands. Do not stage, commit, push, or open a PR. For any gated action, stop and emit "⛔ APPROVAL-REQUEST: <action> — <why>". Last output follows:\n\n'
+    tail -80 "$VERIFY_FAILED_LOG"
+  } > "$VPROMPT"
+  codex_resume_fix "$IMPL_SESSION_ID" "$VPROMPT" "$VOUT" || die "verification repair session failed"
+  REPAIR_APPROVAL="$(sed -n 's/^⛔ APPROVAL-REQUEST:[[:space:]]*//p' "$VOUT" | head -1)"
+  [[ -z "$REPAIR_APPROVAL" ]] || die "verification repair requires approval before continuing: ${REPAIR_APPROVAL:0:500}"
+  if run_verification; then
+    :
   else
-    git commit -m "$COMMIT_SUBJECT" || die "driver could not commit worktree changes"
+    verify_rc=$?
+    [[ "$verify_rc" -eq 1 ]] || die "invalid verify configuration after repair: $VERIFY_CONFIG"
+    die "$VERIFY_FAILED_NAME verification still failing after one repair (log: $VERIFY_FAILED_LOG); push/PR skipped"
   fi
+fi
+
+COMMIT_SUBJECT="$(awk 'NF { line=$0 } END { print line }' "$IMPL" | tr -d '\r')"
+[[ -n "$COMMIT_SUBJECT" ]] || COMMIT_SUBJECT="orchestrate: $TOPIC"
+COMMIT_SUBJECT="${COMMIT_SUBJECT:0:200}"
+git add -A -- ':!PLAN-*.md' || die "driver could not stage verified changes"
+if git diff --cached --quiet; then
+  ALREADY_AHEAD="$(git rev-list --count "origin/$BASE..HEAD" 2>/dev/null || echo 0)"
+  [[ "$DEDICATED_WORKTREE" != "1" || ( "$RESUME" == "1" && "$ALREADY_AHEAD" -ge 1 ) ]] || \
+    die "Codex changed nothing in the worktree (see $IMPL) — aborting."
+else
+  git commit -m "$COMMIT_SUBJECT" || die "driver could not commit verified changes"
 fi
 
 CURRENT_STEP=4
@@ -457,6 +600,13 @@ if [[ "$DEDICATED_WORKTREE" == "1" ]]; then
   [[ "$AHEAD" -ge 1 ]] || die "driver commit did not land on $BRANCH (see $IMPL) — aborting."
 else
   [[ "$AHEAD" -ge 1 ]] || die "Codex committed nothing on $BRANCH (see $IMPL) — aborting."
+fi
+TEST_DELTA="$("$VERIFY_PYTHON" "$VERIFY_HELPER" classify --repo "$(pwd -P)" --base-ref "origin/$BASE")" || \
+  die "could not classify test delta against origin/$BASE"
+emit metric --id "$RUN_ID" --key testDelta --value "$TEST_DELTA"
+TEST_DELTA_WARNING=""
+if [[ "$TEST_DELTA" == "src-only" ]]; then
+  TEST_DELTA_WARNING="- ⚠ diff changes source but no tests — scrutinize coverage"
 fi
 git push -u origin "$BRANCH" || die "git push failed"
 gh pr view "$BRANCH" >/dev/null 2>&1 || \
@@ -479,6 +629,7 @@ cat > "$BATON" <<EOF
 - Codex critique: ${CRIT}
 - Codex implementation notes: ${IMPL}
 - Codex implementation session: ${IMPL_SESSION_ID}
+$TEST_DELTA_WARNING
 $([[ "$DEDICATED_WORKTREE" == "1" ]] && echo "- Worktree with the changes: $(pwd)  (git worktree remove it when done)")
 
 ## Definition of Done

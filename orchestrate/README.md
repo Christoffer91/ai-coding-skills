@@ -13,7 +13,7 @@ Keep expensive judgment work on Claude; hand mechanical, well-specified executio
 - OpenAI Codex CLI, installed and logged in (`codex login`).
 - GitHub CLI `gh`, authenticated with repo/workflow access.
 - Git and a repo with a remote.
-- Python 3 standard library for the dashboard/status/watchdog tools.
+- Python 3 for the dashboard/status/watchdog tools; the verify gate selects Python 3.11+ with `tomllib` (or a Python with the `tomli` backport).
 
 No API keys are needed when Codex uses ChatGPT OAuth and `gh` uses its keyring token.
 
@@ -42,6 +42,8 @@ Start `dashboard/orchestrate-dashboard` for local status and `dashboard/orchestr
 
 For phone-capable driver notifications, set `ORCH_NOTIFY_CMD=/absolute/path/to/hook` or repo-local `.ai/orchestrate.toml` `notify_cmd` to a quoted path/argv array. The hook receives the message as one argument and is executed directly, never through a shell. macOS Notification Center is only a desktop fallback; Remote Control gates use `PushNotification` plus `AskUserQuestion` in-session.
 
+Repo-local `test_cmd`, `build_cmd`, and `eval_cmd` entries add an independent pre-push verify gate. Prefer argv arrays. They execute directly in the task worktree with a per-command `ORCH_VERIFY_TIMEOUT` (default 900 seconds), write logs under `~/.orchestrate/artifacts/<id>/`, and never invoke a shell. Keep `.ai/orchestrate.toml` gitignored, trusted, and secret-free; do not use verification configuration supplied by a PR.
+
 ## The loop
 
 1. Plan (Claude) → 2. Critique (Codex) → 3. Implement (Codex, sandboxed) → 4. Open PR (driver) → 5. Review (Claude) → 6. Apply edits (Codex) → 7. Deploy (risk-gated).
@@ -60,6 +62,7 @@ For phone-capable driver notifications, set `ORCH_NOTIFY_CMD=/absolute/path/to/h
 skills/orchestrate/SKILL.md              conductor and validated review entry
 skills/orchestrate/references/           deploy safety, loop mechanics, Desktop bridge
 scripts/orchestrate.sh                   headless Codex-leg driver
+scripts/orchestrate_verify.py            safe TOML/argv verifier and test-delta classifier
 dashboard/orchestrate-dashboard          localhost status server/UI
 dashboard/orchestrate-status             state emitter, gates, notifier hook
 dashboard/orchestrate-watchdog           stale-worker detection/recovery
