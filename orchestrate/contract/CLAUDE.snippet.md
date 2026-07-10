@@ -31,4 +31,4 @@ Default operating model for coding work. **Claude** is the planner + PR reviewer
 
 Standing rule: when the next phase is execution on a well-spec'd plan, hand to Codex; when it's judgment/planning/PR-review, keep it in Claude.
 
-**Spec-driven planning (always):** implementation work starts from a `PLAN-<topic>.md` per the orchestrate spec template (numbered fixes with file paths, runnable acceptance, out-of-scope). Planner: your strongest Claude when available; otherwise draft the spec with gpt-5.6-sol at xhigh (`codex exec -s read-only`) and validate it in-session before any execution.
+**Spec-driven planning (always):** implementation work starts from a `PLAN-<topic>.md` per the orchestrate spec template (numbered fixes with file paths, runnable acceptance, out-of-scope). Planner: your strongest Claude when available; otherwise draft the spec with gpt-5.6-sol at ultra (`codex exec -s read-only`) and validate it in-session before any execution.

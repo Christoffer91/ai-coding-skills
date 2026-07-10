@@ -8,9 +8,9 @@ hands-off execution reliable.
 ## Who writes the spec
 - **Fable 5 (medium)** — the default planner, in-session.
 - **Fallback when Fable is unavailable** (session limits, outage, non-Fable session):
-  draft with **gpt-5.6-sol at xhigh**, read-only, then the session validates and owns it:
+  draft with **gpt-5.6-sol at ultra**, read-only, then the session validates and owns it:
   ```bash
-  codex exec -s read-only -c model_reasoning_effort=xhigh -o /tmp/spec-draft.md - < spec-request.md
+  codex exec -s read-only -c model_reasoning_effort=ultra -o /tmp/spec-draft.md - < spec-request.md
   ```
   The spec-request states the goal, constraints, and this template. A drafted spec is
   never executed unvalidated — the session (any Claude) reviews it against the template

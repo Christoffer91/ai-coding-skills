@@ -48,8 +48,8 @@ RESTART="${ORCH_RESTART:-0}"
 DEDICATED_WORKTREE="${ORCH_DEDICATED_WORKTREE:-$WORKTREE}"
 VERIFY_TIMEOUT="${ORCH_VERIFY_TIMEOUT:-900}"
 
-case "$EXEC_EFFORT" in low|medium|high|xhigh) ;; *)
-  die "ORCH_EXEC_EFFORT must be one of: low, medium, high, xhigh" ;;
+case "$EXEC_EFFORT" in low|medium|high|xhigh|ultra) ;; *)
+  die "ORCH_EXEC_EFFORT must be one of: low, medium, high, xhigh, ultra" ;;
 esac
 [[ "$VERIFY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "ORCH_VERIFY_TIMEOUT must be a positive integer"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch name: $BRANCH"
