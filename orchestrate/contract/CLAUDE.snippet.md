@@ -30,3 +30,5 @@ Default operating model for coding work. **Claude** is the planner + PR reviewer
 1. Claude plans → 2. gpt-5.6-sol critiques the plan (`codex exec -s read-only`) → 3. gpt-5.6-sol codes on a task branch (`codex exec -s workspace-write`) → 4. gpt-5.6-sol/driver opens PR (`gh pr create`) → 5. Claude reviews the PR (optionally `codex review` as a 2nd lens) → 6. gpt-5.6-sol applies edits (cap ~3 iterations) → 7. deploy: human-gated unless the repo is explicitly authorized (see the skill's `auto-deploy-safety.md`).
 
 Standing rule: when the next phase is execution on a well-spec'd plan, hand to Codex; when it's judgment/planning/PR-review, keep it in Claude.
+
+**Spec-driven planning (always):** implementation work starts from a `PLAN-<topic>.md` per the orchestrate spec template (numbered fixes with file paths, runnable acceptance, out-of-scope). Planner: your strongest Claude when available; otherwise draft the spec with gpt-5.6-sol at xhigh (`codex exec -s read-only`) and validate it in-session before any execution.
