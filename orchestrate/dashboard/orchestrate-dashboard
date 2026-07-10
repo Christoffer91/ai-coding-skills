@@ -227,6 +227,31 @@ def cleanup_retained_runs(now=None):
         except OSError: pass
 
 
+def resolve_console_log(rid):
+    """Best console log for a run: recorded metric -> artifacts dir -> newest live TMPDIR clog."""
+    if not rid:
+        return None
+    try:
+        with open(os.path.join(RUNS, rid + ".json")) as fh:
+            r = json.load(fh)
+    except Exception:
+        return None
+    rec = (r.get("metrics") or {}).get("log")
+    if rec and os.path.isfile(rec):
+        return rec
+    art = os.path.join(BASE, "artifacts", rid)
+    logs = sorted(glob.glob(os.path.join(art, "*.log")), key=os.path.getmtime, reverse=True)
+    if logs:
+        return logs[0]
+    if r.get("status") not in ("done", "failed", "fail"):
+        import tempfile
+        cand = [f for f in glob.glob(os.path.join(tempfile.gettempdir(), "orch-clog-*.log"))
+                if os.path.getsize(f) > 4096]
+        if cand:
+            return max(cand, key=os.path.getmtime)
+    return None
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         b = body if isinstance(body, bytes) else str(body).encode("utf-8")
@@ -245,6 +270,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._send(200, fh.read(), "text/html; charset=utf-8")
             except FileNotFoundError:
                 self._send(500, "dashboard.html not found next to this script", "text/plain")
+        elif p == "/watch":
+            try:
+                with open(os.path.join(HERE, "watch.html"), "rb") as fh:
+                    self._send(200, fh.read(), "text/html; charset=utf-8")
+            except FileNotFoundError:
+                self._send(500, "watch.html not found next to this script", "text/plain")
+        elif p in ("/log", "/console"):
+            try:
+                with open(os.path.join(HERE, "log.html"), "rb") as fh:
+                    self._send(200, fh.read(), "text/html; charset=utf-8")
+            except FileNotFoundError:
+                self._send(500, "log.html not found next to this script", "text/plain")
+        elif p in ("/api/log", "/api/console"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            rid = os.path.basename((q.get("id") or [""])[0])
+            tail = min(int((q.get("tail") or ["65536"])[0]), 512 * 1024)
+            path = resolve_console_log(rid)
+            if not path:
+                return self._send(404, json.dumps({"error": "no console log found for this run"}))
+            try:
+                st = os.stat(path)
+                with open(path, "rb") as fh:
+                    if st.st_size > tail:
+                        fh.seek(st.st_size - tail)
+                    text = fh.read().decode("utf-8", "replace")
+                self._send(200, json.dumps({"path": path, "size": st.st_size,
+                                            "mtime": int(st.st_mtime), "text": text}))
+            except OSError as e:
+                self._send(500, json.dumps({"error": str(e)}))
         elif p == "/api/runs":
             self._send(200, json.dumps(load_runs()))
         elif p == "/api/health":

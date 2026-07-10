@@ -50,3 +50,9 @@ The card shows the run's **title**. Set it to the same name you use for the work
 your Claude chat so the dashboard lines up with your tabs:
 - driver:     `ORCH_TITLE="CoWriter loop" orchestrate.sh cowriter`
 - in-session: `orchestrate-status start --title "CoWriter loop" …`
+
+## Terminal view — orchestrate-watch
+`./orchestrate-watch` renders the same runs as the dashboard in your terminal:
+current step + live activity note, colored liveness, and "changed Xs ago" per run.
+Flags: `--interval 2` (refresh), `--once` (print and exit), `--all` (include old
+done runs). Ctrl-C quits.

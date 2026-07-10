@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""orchestrate-watch — live terminal view of every orchestrate run.
+
+Reads ~/.orchestrate/runs/*.json (same source as the dashboard) and renders a
+compact auto-refreshing table: current step + live activity, and how long since
+each run last changed. Ctrl-C to quit.
+
+Usage:  orchestrate-watch [--interval 2] [--once] [--all]
+        --all also shows done/failed runs older than 24h
+No dependencies (Python 3 stdlib, ANSI colors).
+"""
+import argparse, glob, json, os, sys, time
+
+RUNS = os.path.join(os.path.expanduser("~"), ".orchestrate", "runs")
+STALE = int(os.environ.get("ORCH_STALE_SECS", "75"))
+
+C = {"reset": "\x1b[0m", "dim": "\x1b[2m", "bold": "\x1b[1m",
+     "green": "\x1b[32m", "amber": "\x1b[33m", "red": "\x1b[31m",
+     "teal": "\x1b[36m", "clay": "\x1b[38;5;173m", "grey": "\x1b[90m"}
+def c(color, s):
+    return f"{C[color]}{s}{C['reset']}" if sys.stdout.isatty() else str(s)
+
+def age_str(sec):
+    sec = max(0, int(sec))
+    if sec < 60: return f"{sec}s"
+    if sec < 3600: return f"{sec//60}m {sec%60:02d}s"
+    return f"{sec//3600}h {(sec%3600)//60:02d}m"
+
+def health_of(r, age):
+    st = r.get("status")
+    if st == "done": return ("done", "grey", "✓")
+    if st in ("failed", "fail"): return ("failed", "red", "✗")
+    if st == "handoff": return ("with Claude", "clay", "⇄")
+    if r.get("gate"): return ("NEEDS YOU", "amber", "◆")
+    pid = r.get("pid")
+    if pid:
+        try: os.kill(int(pid), 0)
+        except ProcessLookupError: return ("not running", "red", "■")
+        except Exception: pass
+    if age > STALE: return (f"stalled", "amber", "⚠")
+    return ("live", "green", "●")
+
+def current_step(r):
+    steps = r.get("steps") or []
+    active = next((s for s in steps if s.get("state") == "active"), None)
+    return active or (steps[-1] if steps else None)
+
+def render(show_all):
+    now = time.time()
+    rows = []
+    for f in sorted(glob.glob(os.path.join(RUNS, "*.json"))):
+        try:
+            r = json.load(open(f))
+        except Exception:
+            continue
+        age = now - r.get("updatedAt", now)
+        if not show_all and r.get("status") in ("done", "failed", "fail") and age > 86400:
+            continue
+        rows.append((r, age))
+    # active first, then by recency
+    rows.sort(key=lambda x: (x[0].get("status") in ("done", "failed", "fail"), x[1]))
+
+    out = [c("bold", "orchestrate — live") + c("dim", f"  ·  {time.strftime('%H:%M:%S')}  ·  {RUNS}")]
+    out.append(c("dim", "─" * 78))
+    if not rows:
+        out.append(c("dim", "  no runs — start one with /orchestrate <topic>"))
+    for r, age in rows:
+        label, color, icon = health_of(r, age)
+        step = current_step(r)
+        elapsed = age_str(now - r.get("startedAt", now))
+        head = (f"  {c(color, icon)} {c('bold', (r.get('title') or r.get('topic', '?'))[:44]):<53}"
+                f" {c(color, label):<24} step {r.get('step', '?')}/7"
+                f"  {c('dim', 'changed')} {c(color if age > STALE else 'green', age_str(age) + ' ago'):<18}"
+                f" {c('dim', 'run ' + elapsed)}")
+        out.append(head)
+        if step and r.get("status") not in ("done", "failed", "fail"):
+            actor = step.get("actor", "")
+            acolor = "clay" if any(k in actor.lower() for k in ("claude", "fable", "opus")) else "teal"
+            note = (step.get("note") or "").strip()
+            tail = f" — {note[:88]}" if note else ""
+            in_step = ""
+            if step.get("startedAt") and step.get("state") == "active":
+                in_step = c("dim", f"  ({age_str(now - step['startedAt'])} in step)")
+            out.append(f"     {c(acolor, actor):<18} {c('bold', step.get('name',''))}{tail}{in_step}")
+        pr = r.get("pr") or {}
+        extras = []
+        if pr.get("number"): extras.append(f"PR #{pr['number']}")
+        t = (r.get("metrics") or {}).get("tests")
+        if t: extras.append(f"tests {t}")
+        if r.get("gate"): extras.append(c("amber", "gate: " + r["gate"].get("question", "")[:60]))
+        if extras: out.append(c("dim", "     " + "  ·  ".join(str(e) for e in extras)))
+        out.append("")
+    return "\n".join(out)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--interval", type=float, default=2.0)
+    ap.add_argument("--once", action="store_true")
+    ap.add_argument("--all", action="store_true", help="include old done/failed runs")
+    a = ap.parse_args()
+    os.makedirs(RUNS, exist_ok=True)
+    try:
+        while True:
+            frame = render(a.all)
+            if a.once:
+                print(frame); return
+            sys.stdout.write("\x1b[2J\x1b[H" + frame + "\n" + C["dim"] + "refreshing every "
+                             f"{a.interval:g}s — Ctrl-C to quit" + C["reset"] + "\n")
+            sys.stdout.flush()
+            time.sleep(a.interval)
+    except KeyboardInterrupt:
+        print()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>orchestrate · watch</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* Deliberately single-theme: this page IS a terminal. */
+  :root{
+    --bg:#0C1110; --ink:#D8E2DD; --dim:#5F6E68; --line:#1B2420;
+    --green:#3FD68F; --amber:#E8B04B; --red:#F07568; --teal:#3EC9A0; --clay:#E09B7C; --grey:#7A8781;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);
+    font-size:13.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{padding:14px 18px 30px;max-width:1000px}
+  header{display:flex;justify-content:space-between;gap:12px;color:var(--dim);
+    border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:10px;flex-wrap:wrap}
+  header b{color:var(--ink);font-weight:700}
+  header b .t{color:var(--teal)}
+  .run{padding:9px 0;border-bottom:1px solid var(--line)}
+  .l1{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .icon{width:1.2em;display:inline-block}
+  .title{font-weight:700;flex:1 1 auto;min-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .st{white-space:nowrap}
+  .st.live{color:var(--green)} .st.stale{color:var(--amber)} .st.dead{color:var(--red)}
+  .st.needs{color:var(--amber);font-weight:700} .st.handoff{color:var(--clay)}
+  .st.done{color:var(--grey)} .st.failed{color:var(--red)}
+  .meta{color:var(--dim);white-space:nowrap}
+  .meta .hot{color:var(--green)} .meta .cold{color:var(--amber)}
+  .l2{padding-left:1.6em;color:var(--ink)}
+  .actor{font-weight:700}
+  .actor.codex{color:var(--teal)} .actor.claude{color:var(--clay)} .actor.neutral{color:var(--grey)}
+  .note{color:var(--dim)}
+  .instep{color:var(--dim)}
+  .l3{padding-left:1.6em;color:var(--dim)}
+  .l3 .gate{color:var(--amber)}
+  .l3 a{color:var(--ink)}
+  .blink{animation:blink 1.4s step-end infinite}
+  @keyframes blink{50%{opacity:.25}}
+  @media (prefers-reduced-motion:reduce){.blink{animation:none}}
+  .empty{color:var(--dim);padding:18px 0}
+  footer{color:var(--dim);padding-top:10px}
+</style>
+<div class="wrap">
+  <header>
+    <b>orchestrate<span class="t">▮</span> watch</b>
+    <span id="clock">connecting…</span>
+  </header>
+  <div id="runs"></div>
+  <footer>polls /api/runs · <a href="/" style="color:var(--dim)">full dashboard</a> · add <span style="color:var(--ink)">?all=1</span> for old runs</footer>
+</div>
+<script>
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const safeUrl=u=>/^(https?:\/\/|#)/.test(u||"")?u:"#";
+const SHOW_ALL=new URLSearchParams(location.search).has("all");
+const STALE=75;
+let RUNS=[];
+const now=()=>Date.now()/1000;
+function age(s){s=Math.max(0,Math.round(s));if(s<60)return s+"s";if(s<3600)return Math.floor(s/60)+"m "+String(s%60).padStart(2,"0")+"s";return Math.floor(s/3600)+"h "+String(Math.floor(s%3600/60)).padStart(2,"0")+"m";}
+function stateOf(r){
+  const st=r.status;
+  if(st==="done")return["done","done","✓"];
+  if(st==="failed"||st==="fail")return["failed","failed","✗"];
+  if(r.gate&&!r.answered)return["needs","NEEDS YOU","◆"];
+  if(st==="handoff"||r.health==="handoff")return["handoff","with Claude","⇄"];
+  if(r.health==="exited")return["dead","not running","■"];
+  const a=r.staleSecs!=null?r.staleSecs:now()-(r.updatedAt||now());
+  if(a>STALE)return["stale","stalled","⚠"];
+  return["live","live","●"];
+}
+const kindOf=a=>/claude|fable|opus/i.test(a||"")?"claude":/gpt|codex|sol|terra/i.test(a||"")?"codex":"neutral";
+function curStep(r){return (r.steps||[]).find(s=>s.state==="active")||(r.steps||[]).slice(-1)[0];}
+function render(){
+  const el=document.getElementById("runs");
+  const rows=RUNS.filter(r=>SHOW_ALL||!(["done","failed","fail"].includes(r.status)&&(now()-(r.updatedAt||0))>86400));
+  rows.sort((a,b)=>(["done","failed","fail"].includes(a.status)?1:0)-(["done","failed","fail"].includes(b.status)?1:0)||(b.updatedAt||0)-(a.updatedAt||0));
+  if(!rows.length){el.innerHTML='<div class="empty">no runs — start one with /orchestrate &lt;topic&gt;</div>';return;}
+  el.innerHTML=rows.map(r=>{
+    const [cls,label,icon]=stateOf(r);
+    const a=now()-(r.updatedAt||now());
+    const changed=`<span class="${a>STALE?"cold":"hot"}">${age(a)} ago</span>`;
+    const active=!["done","failed","fail"].includes(r.status);
+    let l2="";
+    const s=curStep(r);
+    if(s&&active){
+      const k=kindOf(s.actor);
+      const inStep=(s.startedAt&&s.state==="active")?`<span class="instep"> (${age(now()-s.startedAt)} in step)</span>`:"";
+      const note=s.note?` <span class="note">— ${esc(String(s.note).slice(0,110))}</span>`:"";
+      l2=`<div class="l2"><span class="actor ${k}">${esc(s.actor||"")}</span> <b>${esc(s.name||"")}</b>${note}${inStep}</div>`;
+    }
+    const ex=[];
+    if(active)ex.push(`<a href="/console?id=${encodeURIComponent(r.id)}">console →</a>`);
+    if(r.pr&&r.pr.number)ex.push(`<a href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">PR #${esc(r.pr.number)}</a>`);
+    const t=(r.metrics||{}).tests; if(t)ex.push("tests "+esc(t));
+    if(r.gate&&!r.answered)ex.push(`<span class="gate">gate: ${esc(String(r.gate.question).slice(0,70))} → answer on <a href="/">the dashboard</a></span>`);
+    const l3=ex.length?`<div class="l3">${ex.join("  ·  ")}</div>`:"";
+    return `<div class="run">
+      <div class="l1"><span class="icon st ${cls} ${cls==="live"?"blink":""}">${icon}</span>
+        <span class="title">${esc(r.title||r.topic||"?")}</span>
+        <span class="st ${cls}">${label}</span>
+        <span class="meta">step ${r.step||"?"}/7</span>
+        <span class="meta">changed ${changed}</span>
+        <span class="meta">run ${age(now()-(r.startedAt||now()))}</span></div>
+      ${l2}${l3}</div>`;
+  }).join("");
+}
+async function load(){
+  try{const res=await fetch("/api/runs",{cache:"no-store"});RUNS=await res.json();
+    document.getElementById("clock").textContent=new Date().toLocaleTimeString();}
+  catch(e){document.getElementById("clock").textContent="offline";}
+  render();
+}
+load();setInterval(load,2000);setInterval(render,1000);
+</script>

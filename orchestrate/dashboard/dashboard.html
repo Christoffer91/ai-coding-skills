@@ -195,7 +195,7 @@
 
 <script>
 let RUNS=[], open={}, localAnswered={};
-const kindOf=a=>/claude|opus|fable|sonnet/i.test(a||"")?"claude":/gpt|codex|sol/i.test(a||"")?"codex":"neutral";
+const kindOf=a=>/claude|opus|fable|sonnet/i.test(a||"")?"claude":/gpt|codex|sol|terra/i.test(a||"")?"codex":"neutral";
 const whoLabel=k=>k==="claude"?"Claude":k==="codex"?"Codex":"Driver";
 const safeUrl=u=>/^(https?:\/\/|#)/.test(u||"")?u:"#";
 const isAns=r=>r.answered||localAnswered[r.id];

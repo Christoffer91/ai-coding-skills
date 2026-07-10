@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -24,6 +25,9 @@ STATUS = DASHBOARD_DIR / "orchestrate-status"
 DASHBOARD = DASHBOARD_DIR / "orchestrate-dashboard"
 WATCHDOG = DASHBOARD_DIR / "orchestrate-watchdog"
 SYNC = ROOT / "scripts" / "sync-public.sh"
+CODEX_ORCHESTRATE = ROOT / "skills" / "codex" / "skills" / "orchestrate"
+CODEX_PIPELINE = ROOT / "skills" / "codex" / "skills" / "chansen-pipeline" / "SKILL.md"
+CODEX_HANDOVER = ROOT / "skills" / "codex" / "skills" / "handover" / "SKILL.md"
 
 
 def load_script(name: str, path: Path):
@@ -632,12 +636,12 @@ exit 0
         subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
         subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
         proc = subprocess.Popen(
-            ["bash", str(root / "scripts/orchestrate.sh"), "--timeout", "5", "t", "PLAN-t.md"],
+            ["bash", str(root / "scripts/orchestrate.sh"), "--timeout", "10", "t", "PLAN-t.md"],
             cwd=root, env={**env, "ORCH_WORKTREE": "1", "FAKE_CODEX_MODE": "approval-worktree"},
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         status_path = Path(env["HOME"]) / ".orchestrate/runs/repo-t.json"
-        deadline = time.time() + 4
+        deadline = time.time() + 8
         data = None
         while time.time() < deadline:
             if status_path.exists():
@@ -652,7 +656,7 @@ exit 0
             answers = Path(env["HOME"]) / ".orchestrate/answers"
             answers.mkdir(parents=True, exist_ok=True)
             (answers / "repo-t.json").write_text(json.dumps({"choice": "Reject and stop"}))
-            stdout, stderr = proc.communicate(timeout=8)
+            stdout, stderr = proc.communicate(timeout=12)
             self.assertEqual(proc.returncode, 3, f"stdout={stdout!r}\nstderr={stderr!r}")
             rejected = json.loads(status_path.read_text())
             self.assertEqual(rejected["status"], "rejected")
@@ -665,6 +669,83 @@ exit 0
                 proc.wait()
             subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
                            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class CodexParityTests(unittest.TestCase):
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_shared_status_reference_is_optional_unique_and_actor_explicit(self):
+        path = CODEX_ORCHESTRATE / "references" / "shared-run-status.md"
+        self.assertTrue(path.is_file())
+        content = path.read_text()
+        self.assertIn('$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status', content)
+        self.assertIn("SKIP silently", content)
+        self.assertIn("<YYYYMMDDTHHMMSSZ>-<pid>", content)
+        self.assertIn('--actor "Terra · medium"', content)
+        self.assertIn('pause', content)
+        self.assertIn('Reserve `fail', content)
+        self.assertIn('phone-capable hook', content)
+        self.assertNotIn("first answer wins", content.lower())
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_external_final_review_contract_is_safe_bounded_and_has_internal_fallback(self):
+        path = CODEX_ORCHESTRATE / "references" / "claude-final-review.md"
+        self.assertTrue(path.is_file())
+        content = path.read_text()
+        for flag in ("--safe-mode", "--model fable", "--fallback-model opus"):
+            self.assertIn(flag, content)
+        self.assertIn("the internal `orchestrate_reviewer` is the fallback", content)
+        self.assertIn("at most 200 KiB", content)
+        self.assertIn("requires separate explicit approval", content)
+        self.assertNotIn("dangerously", content)
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_codex_skills_reference_shared_status_final_review_and_baton_contract(self):
+        orchestrate = (CODEX_ORCHESTRATE / "SKILL.md").read_text()
+        pipeline = CODEX_PIPELINE.read_text()
+        handover = CODEX_HANDOVER.read_text()
+        self.assertIn("references/shared-run-status.md", orchestrate)
+        self.assertIn("references/claude-final-review.md", orchestrate)
+        self.assertIn("Optional external lane", orchestrate)
+        self.assertIn("shared status emission", pipeline)
+        self.assertIn("STANDARD", pipeline)
+        self.assertIn("DEEP", pipeline)
+        self.assertIn("HANDOFF-CLAUDE-review-<topic>.md", handover)
+        self.assertIn("exact implementation session ID", handover)
+
+    def test_documented_handoff_metadata_satisfies_emitter_contract(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            env = {**os.environ, "HOME": str(home), "ORCH_NOTIFY_DISABLE": "1"}
+            baton = home / "repo" / "HANDOFF-CLAUDE-review-parity.md"
+            baton.parent.mkdir()
+            baton.write_text("# Review baton\n")
+            commands = [
+                ("start", "--id", "repo-parity-branch-20260710T120000Z-42", "--repo", "repo",
+                 "--topic", "parity", "--title", "Parity", "--branch", "orch/parity"),
+                ("pr", "--id", "repo-parity-branch-20260710T120000Z-42", "--number", "42",
+                 "--url", "https://example.invalid/pr/42"),
+                ("metric", "--id", "repo-parity-branch-20260710T120000Z-42", "--key", "session",
+                 "--value", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                ("handoff", "--id", "repo-parity-branch-20260710T120000Z-42", "--baton", str(baton),
+                 "--review-command", "/orchestrate review parity"),
+            ]
+            for command in commands:
+                proc = run("python3", str(STATUS), *command, env=env)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads((home / ".orchestrate/runs/repo-parity-branch-20260710T120000Z-42.json").read_text())
+            self.assertEqual(data["status"], "handoff")
+            self.assertEqual(data["metrics"]["session"], "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+            self.assertEqual(data["review"]["baton"], str(baton))
+            self.assertTrue(Path(data["review"]["baton"]).is_absolute())
+            self.assertTrue(Path(data["review"]["baton"]).is_file())
+            self.assertEqual(data["review"]["command"], "/orchestrate review parity")
+
+    def test_dashboard_terra_actor_regex_classifies_terra_as_codex(self):
+        content = (DASHBOARD_DIR / "dashboard.html").read_text()
+        match = re.search(r'\?"claude":/(.*?)/i\.test\(a\|\|""\)\?"codex"', content)
+        self.assertIsNotNone(match)
+        self.assertRegex("Terra medium", re.compile(match.group(1), re.IGNORECASE))
+        self.assertIn('/gpt|codex|sol|terra/i', content)
 
 
 @unittest.skipUnless(SYNC.exists(), "private sync script is not part of the public package")

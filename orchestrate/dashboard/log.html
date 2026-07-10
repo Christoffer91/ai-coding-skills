@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>orchestrate · console</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#0C1110; --ink:#C9D6D0; --dim:#5F6E68; --line:#1B2420;
+    --green:#3FD68F; --amber:#E8B04B; --teal:#3EC9A0;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:var(--mono);font-size:12.5px;line-height:1.5}
+  body{display:flex;flex-direction:column}
+  header{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;padding:10px 16px;
+    border-bottom:1px solid var(--line);color:var(--dim)}
+  header b{color:var(--ink)} header b .t{color:var(--teal)}
+  #age.hot{color:var(--green)} #age.cold{color:var(--amber)}
+  #pin{margin-left:auto;color:var(--dim);cursor:pointer;user-select:none}
+  #pin.on{color:var(--green)}
+  pre{flex:1;overflow:auto;margin:0;padding:14px 16px 40px;white-space:pre-wrap;
+    word-break:break-word;color:var(--ink)}
+  pre::selection{background:#24433a}
+</style>
+<header>
+  <b>orchestrate<span class="t">▮</span> console</b>
+  <span id="run"></span>
+  <span>last output <span id="age" class="hot">—</span></span>
+  <span id="size"></span>
+  <span id="pin" class="on" title="autoscroll">⇣ follow</span>
+</header>
+<pre id="out">connecting…</pre>
+<script>
+const q=new URLSearchParams(location.search);
+const ID=q.get("id")||"";
+document.getElementById("run").textContent=ID||"(no ?id= given)";
+let mtime=0, follow=true, lastLen=-1;
+const out=document.getElementById("out"), pin=document.getElementById("pin");
+pin.onclick=()=>{follow=!follow;pin.classList.toggle("on",follow);if(follow)out.scrollTop=out.scrollHeight;};
+out.addEventListener("scroll",()=>{ // scrolling up unpins; hitting bottom re-pins
+  const atBottom=out.scrollHeight-out.scrollTop-out.clientHeight<40;
+  if(!atBottom&&follow){follow=false;pin.classList.remove("on");}
+  else if(atBottom&&!follow){follow=true;pin.classList.add("on");}
+});
+function age(s){s=Math.max(0,Math.round(s));if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m "+s%60+"s ago";return Math.floor(s/3600)+"h ago";}
+function tickAge(){const el=document.getElementById("age");if(!mtime)return;
+  const a=Date.now()/1000-mtime;el.textContent=age(a);el.className=a>75?"cold":"hot";}
+async function load(){
+  if(!ID){out.textContent="Missing ?id=<run-id> — open from /watch.";return;}
+  try{
+    const res=await fetch(`/api/console?id=${encodeURIComponent(ID)}&tail=131072`,{cache:"no-store"});
+    const j=await res.json();
+    if(j.error){out.textContent=j.error;return;}
+    mtime=j.mtime;
+    document.getElementById("size").textContent=(j.size/1024).toFixed(0)+" KB · "+j.path.split("/").pop();
+    if(j.text.length!==lastLen){lastLen=j.text.length;out.textContent=j.text;
+      if(follow)out.scrollTop=out.scrollHeight;}
+  }catch(e){if(lastLen<0)out.textContent="fetch failed: "+e+"\n(adblocker? try whitelisting localhost)";}
+  tickAge();
+}
+load();setInterval(load,1500);setInterval(tickAge,1000);
+</script>

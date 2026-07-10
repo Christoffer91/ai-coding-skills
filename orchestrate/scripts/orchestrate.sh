@@ -315,7 +315,7 @@ trap on_exit EXIT
 LAST_SESSION_ID=""
 capture_session() {
   local log="$1" session
-  session="$(sed -nE 's/.*session id:[[:space:]]*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}).*/\1/p' "$log" | tail -1)"
+  session="$(sed -nE 's/.*session id:[[:space:]]*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}).*/\1/p' "$log" | head -1)"  # header id; test output later in the log may contain fixture UUIDs
   LAST_SESSION_ID="$session"
   [[ -n "$session" ]] && emit metric --id "$RUN_ID" --key session --value "$session"
 }
@@ -329,6 +329,7 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n>
   while :; do
     local log cpid last_size=-1 idle=0 hung=0 rc=0 size worker_start worker_pgid last_act_t=0 act
     log="$(mktemp -t orch-clog-XXXX).log"
+    [[ -n "$step_n" ]] && emit metric --id "$RUN_ID" --key log --value "$log"
     "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
     cpid=$!
     worker_start="$(proc_start "$cpid" || true)"
@@ -610,7 +611,8 @@ if [[ "$TEST_DELTA" == "src-only" ]]; then
 fi
 git push -u origin "$BRANCH" || die "git push failed"
 gh pr view "$BRANCH" >/dev/null 2>&1 || \
-  gh pr create --base "$BASE" --head "$BRANCH" --fill >/dev/null || die "gh pr create failed"
+  gh pr create --base "$BASE" --head "$BRANCH" --fill >/dev/null || \
+    { sleep 5; gh pr create --base "$BASE" --head "$BRANCH" --fill >/dev/null; } || die "gh pr create failed"  # retry once: transient TLS/API blips
 PR_NUM="$(gh pr view "$BRANCH" --json number -q .number)"
 PR_URL="$(gh pr view "$BRANCH" --json url -q .url)"
 emit pr --id "$RUN_ID" --number "$PR_NUM" --url "$PR_URL"
