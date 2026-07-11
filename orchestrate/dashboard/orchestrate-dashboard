@@ -77,6 +77,12 @@ def load_runs():
             r["health"] = "stale"         # no update in a while — long step or a hang
         else:
             r["health"] = "live"          # updated recently / worker alive
+        if r["health"] in ("stale", "exited", "failed"):
+            restart_reason = validate_restart(r)
+        else:
+            restart_reason = "automatic restart is offered only for stalled, exited, or failed runs"
+        r["restartable"] = restart_reason is None
+        r["restartReason"] = restart_reason
         out.append(r)
     return out
 
@@ -374,6 +380,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return data
 
     def do_POST(self):
+        if self.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+            return self._send(403, json.dumps({"error": "cross-site POSTs are not allowed"}))
         p = urllib.parse.urlparse(self.path).path
         try:
             data = self._json_body()

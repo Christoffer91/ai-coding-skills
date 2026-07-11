@@ -17,13 +17,14 @@ Leave it running in a tab; it auto-refreshes every 4s. (Tip: symlink both script
 ## Emitting status — `orchestrate-status`
 The `/orchestrate` skill and `scripts/orchestrate.sh` call these at each step (they no-op if the tool isn't installed, so status is optional telemetry):
 ```bash
-orchestrate-status start  --id <id> --repo R --topic T --title "…" --branch B [--planner "…"] [--executor "…"]
+orchestrate-status start  --id <id> --repo R --topic T --title "…" --branch B [--planner "…"] [--executor "…"] [--resume-command "…"]
 orchestrate-status step   --id <id> --n 1..7 --state active|done|fail [--note "…"]
 orchestrate-status pr     --id <id> --number N --url U [--state OPEN]
 orchestrate-status metric --id <id> --key tests --value "12/12"
 orchestrate-status gate   --id <id> --question "…" --option "Merge & deploy:primary" --option "Leave PR open"
 choice=$(orchestrate-status wait --id <id> --timeout 0)   # blocks until you click; prints your choice
 orchestrate-status done   --id <id>
+orchestrate-status resume-command --id <id> (--command "…" | --clear)
 orchestrate-status rm     --id <id>
 ```
 `<id>` is any stable slug for the run (e.g. `<repo>-<topic>`).
@@ -62,8 +63,8 @@ The dashboard binds to 127.0.0.1 only — expose it to YOUR devices (never the
 public internet) with Tailscale Serve:
 1. Install Tailscale on the machine and phone; log both into the same tailnet.
 2. One-time on the tailnet: enable **HTTPS certificates** (Serve prompts with a
-   link). Leave **Funnel OFF** — the API can merge PRs and restart runs and has
-   no auth layer; tailnet device identity IS the auth.
+   link). Leave **Funnel OFF**. Tailnet devices are trusted operators: device
+   identity is the access boundary for actions such as gates and restarts.
 3. `tailscale serve --bg http://127.0.0.1:4600` → prints your private
    `https://<machine>.<tailnet>.ts.net` URL (TLS automatic, tailnet-only).
 4. Phone: open the URL in the browser → Share → Add to Home Screen. The
@@ -71,3 +72,8 @@ public internet) with Tailscale Serve:
 5. Disable anytime: `tailscale serve --https=443 off`.
 Pairs with the ntfy notify hook: the phone gets pinged at gates, the home-screen
 app is where you answer.
+
+Mutating browser requests with `Sec-Fetch-Site: cross-site` are rejected. Normal
+same-origin navigation, `Sec-Fetch-Site: none`, and headerless CLI/curl requests
+remain supported. This is CSRF hardening, not a replacement for the tailnet trust
+boundary; never enable Funnel for this dashboard.

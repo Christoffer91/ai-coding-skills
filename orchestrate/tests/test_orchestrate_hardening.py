@@ -78,6 +78,32 @@ class EmitterTests(unittest.TestCase):
         self.status("rm", "--id", "t")
         self.assertFalse((self.home / ".orchestrate/runs/t.json").exists())
 
+    def test_resume_command_start_update_clear_and_validation(self):
+        self.status(
+            "start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b",
+            "--resume-command", "$chansen-pipeline resume parity",
+        )
+        self.assertEqual(self.data()["resumeCommand"], "$chansen-pipeline resume parity")
+
+        self.status("resume-command", "--id", "t", "--command", "codex resume --last")
+        self.assertEqual(self.data()["resumeCommand"], "codex resume --last")
+
+        self.status("resume-command", "--id", "t", "--clear")
+        self.assertIsNone(self.data()["resumeCommand"])
+
+        for value, message in (
+            ("codex resume\nunsafe", "control characters"),
+            ("   ", "must not be empty"),
+            ("codex\u202eresume", "control characters"),
+            ("x" * 1001, "at most 1000"),
+        ):
+            with self.subTest(value=repr(value)):
+                invalid = self.status(
+                    "resume-command", "--id", "t", "--command", value, check=False,
+                )
+                self.assertNotEqual(invalid.returncode, 0)
+                self.assertIn(message, invalid.stderr)
+
     def test_wait_rejects_answer_not_present_in_gate_options(self):
         self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
         self.status("gate", "--id", "t", "--question", "Ship?", "--option", "Yes:primary", "--option", "No")
@@ -267,11 +293,61 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("dedicated worktree", body)
         reap.assert_not_called()
 
+    def test_load_runs_reports_server_derived_restartability(self):
+        self.write_run("restartable", status="failed")
+        self.write_run("resume-only", status="failed", resumeCommand="codex resume --last")
+        with mock.patch.object(
+            self.dashboard, "validate_restart",
+            side_effect=lambda run: None if run["id"] == "restartable" else "not a dedicated worktree",
+        ):
+            runs = {run["id"]: run for run in self.dashboard.load_runs()}
+        self.assertTrue(runs["restartable"]["restartable"])
+        self.assertIsNone(runs["restartable"]["restartReason"])
+        self.assertFalse(runs["resume-only"]["restartable"])
+        self.assertEqual(runs["resume-only"]["restartReason"], "not a dedicated worktree")
+
     def test_handoff_card_has_clipboard_review_action_with_failure_handling(self):
         html = (DASHBOARD_DIR / "dashboard.html").read_text()
         self.assertIn("data-copy-review", html)
         self.assertIn("navigator.clipboard.writeText", html)
         self.assertIn("copy failed", html)
+
+    def test_failed_run_recovery_prefers_restart_then_escaped_resume_copy(self):
+        html = (DASHBOARD_DIR / "dashboard.html").read_text()
+        self.assertIn("function recoveryAction", html)
+        self.assertIn("r.restartable", html)
+        self.assertIn('data-copy-resume="${esc(r.resumeCommand)}"', html)
+        self.assertIn('title="${esc(r.resumeCommand)}"', html)
+        self.assertGreaterEqual(html.count("recoveryAction(r,st)"), 3)
+        self.assertIn("copy.dataset.copyResume", html)
+        self.assertIn("copied resume command", html)
+        self.assertIn("Copy the resume command from the run details instead.", html)
+        self.assertIn('<code>${esc(r.resumeCommand)}</code>', html)
+
+    def test_cross_site_browser_posts_are_rejected_before_body_parsing(self):
+        for path in ("/api/answer", "/api/restart", "/api/overrides", "/api/overrides/clear"):
+            with self.subTest(path=path):
+                handler = object.__new__(self.dashboard.Handler)
+                handler.path = path
+                handler.headers = {"Sec-Fetch-Site": "cross-site"}
+                handler._json_body = mock.Mock()
+                handler._send = mock.Mock()
+                handler.do_POST()
+                handler._json_body.assert_not_called()
+                code, body = handler._send.call_args.args
+                self.assertEqual(code, 403)
+                self.assertIn("cross-site", json.loads(body)["error"])
+
+        for value in (None, "same-origin", "none"):
+            with self.subTest(allowed=value):
+                handler = object.__new__(self.dashboard.Handler)
+                handler.path = "/unknown"
+                handler.headers = {} if value is None else {"Sec-Fetch-Site": value}
+                handler._json_body = mock.Mock(return_value={})
+                handler._send = mock.Mock()
+                handler.do_POST()
+                handler._json_body.assert_called_once_with()
+                self.assertEqual(handler._send.call_args.args[0], 404)
 
     def test_dashboard_renders_token_usage_with_escaping(self):
         html = (DASHBOARD_DIR / "dashboard.html").read_text()
@@ -430,7 +506,12 @@ done
 prompt=""
 IFS= read -r -d '' prompt || true
 test -z "$out" || echo "fake result $n" > "$out"
-if test "$FAKE_CODEX_MODE" = approval-worktree && test "$n" = 2; then
+if test "$FAKE_CODEX_MODE" = approval-no-changes && test "$n" = 2; then
+  if test -n "$out"; then
+    printf '%s\n%s\n' '⛔ APPROVAL-REQUEST: use the gated capability — no source change is needed yet' 'orchestrate: approval-only fixture' > "$out"
+  fi
+  echo "session id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+elif test "$FAKE_CODEX_MODE" = approval-worktree && test "$n" = 2; then
   echo implemented > implementation.txt
   if test -n "$out"; then
     printf '%s\n%s\n' '⛔ APPROVAL-REQUEST: push changes — publish the reviewed branch' 'orchestrate: approval fixture' > "$out"
@@ -822,6 +903,60 @@ exit 0
             subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
                            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def test_approval_marker_without_changes_gates_before_empty_diff_guard(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        remote = Path(tmp.name) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+        subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+        proc = subprocess.Popen(
+            ["bash", str(root / "scripts/orchestrate.sh"), "--timeout", "10", "t", "PLAN-t.md"],
+            cwd=root,
+            env={**env, "ORCH_WORKTREE": "1", "FAKE_CODEX_MODE": "approval-no-changes", "FAKE_GH_PR": "1"},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        status_path = Path(env["HOME"]) / ".orchestrate/runs/repo-t.json"
+        deadline = time.time() + 8
+        data = None
+        while time.time() < deadline:
+            if status_path.exists():
+                data = json.loads(status_path.read_text())
+                if data.get("gate"):
+                    break
+            time.sleep(0.05)
+        self.assertIsNotNone(data)
+        self.assertIsNotNone(data.get("gate"))
+        worktree = Path(data["cwd"])
+        try:
+            self.assertEqual(data["status"], "await")
+            self.assertEqual(data["checkpoint"]["name"], "awaiting_approval")
+            self.assertIn("gated capability", data["gate"]["question"])
+            self.assertEqual(run("git", "status", "--porcelain", cwd=worktree, check=True).stdout, "")
+
+            # Simulate the explicitly approved action landing its own commit while
+            # the driver is waiting; Codex itself still produced no source diff.
+            (worktree / "approved.txt").write_text("approved\n")
+            subprocess.run(["git", "add", "approved.txt"], cwd=worktree, check=True)
+            subprocess.run(["git", "commit", "-qm", "approved gated action"], cwd=worktree, check=True)
+            answers = Path(env["HOME"]) / ".orchestrate/answers"
+            answers.mkdir(parents=True, exist_ok=True)
+            (answers / "repo-t.json").write_text(json.dumps({"choice": "Approve and continue"}))
+
+            stdout, stderr = proc.communicate(timeout=12)
+            self.assertEqual(proc.returncode, 0, f"stdout={stdout!r}\nstderr={stderr!r}")
+            self.assertNotIn("Codex changed nothing", stderr)
+            finished = json.loads(status_path.read_text())
+            self.assertEqual(finished["status"], "handoff")
+            self.assertEqual(run("git", "show", "HEAD:approved.txt", cwd=worktree, check=True).stdout,
+                             "approved\n")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     def test_approval_rejection_stops_without_push(self):
         tmp, root, env = self.make_repo()
         self.addCleanup(tmp.cleanup)
@@ -879,6 +1014,15 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn('Reserve `fail', content)
         self.assertIn('phone-capable hook', content)
         self.assertNotIn("first answer wins", content.lower())
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_shared_status_documents_resume_and_best_effort_codex_tokens(self):
+        content = (CODEX_ORCHESTRATE / "references" / "shared-run-status.md").read_text()
+        self.assertIn('--resume-command "$RESUME_COMMAND"', content)
+        self.assertIn("resume-command --id", content)
+        self.assertIn("tokens.codex.<agent>", content)
+        self.assertIn("tokens.total", content)
+        self.assertIn("skip silently", content.lower())
 
     @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
     def test_external_final_review_contract_is_safe_bounded_and_has_internal_fallback(self):

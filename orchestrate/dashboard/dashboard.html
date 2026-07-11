@@ -174,6 +174,8 @@
   .row{display:flex;gap:13px;padding:10px 0;border-bottom:1px solid var(--border);align-items:flex-start}
   .detail .row:nth-last-child(1){border-bottom:0}
   @media (min-width:900px){.detail .row:nth-last-child(2){border-bottom:0}}
+  .resume-command{grid-column:1/-1;padding:6px 0 13px;border-bottom:1px solid var(--border)}
+  .resume-command code{display:block;margin-top:5px;color:var(--muted);font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere;user-select:all}
   .row .idx{font-family:var(--mono);color:var(--faint);font-size:12.5px;width:14px;flex:0 0 auto;padding-top:3px}
   .row .stn{width:11px;height:11px;border-radius:50%;flex:0 0 auto;margin-top:6px;background:var(--border-strong)}
   .row .stn.k-claude.done,.row .stn.k-claude.active{background:var(--claude)}
@@ -248,7 +250,7 @@
   .tdetail:last-child,.tbl > .trow:last-of-type{border-bottom:0}
   .tdetail .actions{display:none;padding:12px 20px 0}
   .trow.open + .tdetail .actions{display:flex}
-  .hdetail .actions{display:none}
+  .hdetail .actions{display:none;padding:12px 20px 0}
   .hrow.open + .hdetail .actions{display:flex}
   @media (max-width:1000px){
     .trow{grid-template-columns:100px 1fr 16px;row-gap:7px;padding:11px 14px}
@@ -400,6 +402,17 @@ function stateOf(r){ // one visual state per card: done|failed|rejected|needs|ha
   return h==="exited"?"dead":h==="stale"?"stale":"live";
 }
 
+function recoveryAction(r,st){
+  if(!["stale","dead","failed"].includes(st))return"";
+  if(r.restartable){
+    return `<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;
+  }
+  if(r.resumeCommand){
+    return `<div class="actions"><button class="btn sm" data-copy-resume="${esc(r.resumeCommand)}" title="${esc(r.resumeCommand)}">⧉ copy resume command</button></div>`;
+  }
+  return"";
+}
+
 /* PR chip trusts run status over stale pr.state */
 function prBit(r){
   if(!r.pr)return `<span class="chip">no PR yet</span>`;
@@ -451,6 +464,9 @@ function timebar(r){
 
 function detail(r){
   let h='<div class="detail">'+timebar(r);
+  if(r.resumeCommand){
+    h+=`<div class="resume-command"><span class="lbl">resume command</span><code>${esc(r.resumeCommand)}</code></div>`;
+  }
   (r.steps||[]).forEach(s=>{
     const k=kindOf(s.actor);
     let t="";
@@ -488,9 +504,7 @@ function card(r,compact){
   if(st==="handoff"){
     const command=(r.review&&r.review.command)||`/orchestrate review ${r.topic}`;
     actions=`<div class="actions"><button class="btn sm" data-copy-review="${esc(command)}">⧉ copy review command</button></div>`;
-  } else if(["stale","dead","failed"].includes(st)){
-    actions=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;
-  }
+  } else actions=recoveryAction(r,st);
   const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
   const slim=compact&&!open[r.id];
   const statsBlock=slim
@@ -526,7 +540,7 @@ function trow(r){
   const edge={needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)",failed:"var(--fail)",done:"var(--done)",rejected:"var(--muted)"}[st];
   const actTxt=cur?`${cur.name}${cur.note?" — "+cur.note:""}`:"";
   let acts="";
-  if(["stale","dead","failed"].includes(st))acts=`<div class="actions"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`;
+  if(["stale","dead","failed"].includes(st))acts=recoveryAction(r,st);
   else if(st==="handoff"){const command=(r.review&&r.review.command)||`/orchestrate review ${r.topic}`;
     acts=`<div class="actions"><button class="btn sm" data-copy-review="${esc(command)}">⧉ copy review command</button></div>`;}
   return `<div class="trow ${open[r.id]?'open':''}" data-toggle="${esc(r.id)}" tabindex="0" role="button" aria-expanded="${!!open[r.id]}" style="border-left-color:${edge}">
@@ -549,7 +563,7 @@ function hrow(r){
       <span class="hd ${st}"></span>
       <span class="ht">${esc(r.title)}<small>${esc(r.repo)}</small></span>
       ${pr}<span class="hmeta">${total} · ${when}</span>${pill}<span class="caret">▸</span></div>
-    <div class="hdetail">${st==="failed"?`<div class="actions" style="padding:12px 20px 0"><button class="btn sm restart" data-restart="${esc(r.id)}">↻ Restart</button></div>`:""}${detail(r)}</div>`;
+    <div class="hdetail">${recoveryAction(r,st)}${detail(r)}</div>`;
 }
 function render(){
   const gated=RUNS.filter(isGateOpen);
@@ -637,10 +651,12 @@ document.addEventListener("click",async e=>{
   if(e.target.closest("[data-stop]")){e.stopPropagation();return;}
   const demo=e.target.closest("[data-demo]");
   if(demo){DEMO=true;RUNS=demoRuns();render();loadOverrides();return;}
-  const copy=e.target.closest("[data-copy-review]");
+  const copy=e.target.closest("[data-copy-review],[data-copy-resume]");
   if(copy){e.stopPropagation();
-    try{await navigator.clipboard.writeText(copy.dataset.copyReview);copy.textContent="✓ copied review command";}
-    catch(_){copy.textContent="✕ copy failed";copy.title="Copy the command from the run details instead.";}
+    const isResume=copy.hasAttribute("data-copy-resume");
+    const command=isResume?copy.dataset.copyResume:copy.dataset.copyReview;
+    try{await navigator.clipboard.writeText(command);copy.textContent=isResume?"✓ copied resume command":"✓ copied review command";}
+    catch(_){copy.textContent="✕ copy failed";copy.title=isResume?"Copy the resume command from the run details instead.":"Copy the command from the run details instead.";}
     return;}
   const ans=e.target.closest("[data-ans]");
   if(ans){e.stopPropagation();const id=ans.dataset.ans,choice=ans.dataset.choice;localAnswered[id]=choice;render();

@@ -5,7 +5,8 @@ Writes ~/.orchestrate/runs/<id>.json. Call it from the /orchestrate skill or the
 driver at each step. No dependencies (Python 3 stdlib).
 
   orchestrate-status start  --id ID --repo R --topic T --title "…" --branch B \
-                            [--planner "Opus 4.8"] [--executor "gpt-5.6-sol · medium"] [--mode supervised]
+                            [--planner "Opus 4.8"] [--executor "gpt-5.6-sol · medium"] \
+                            [--mode supervised] [--resume-command "…"]
   orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"]
   orchestrate-status pr     --id ID --number N --url U [--state OPEN]
   orchestrate-status metric --id ID --key tests --value "12/12"
@@ -18,6 +19,7 @@ driver at each step. No dependencies (Python 3 stdlib).
   orchestrate-status pause  --id ID
   orchestrate-status cancel --id ID [--reason TEXT]
   orchestrate-status checkpoint --id ID (--name NAME [--continuation ACTION] | --clear)
+  orchestrate-status resume-command --id ID (--command COMMAND | --clear)
   orchestrate-status rm     --id ID
   orchestrate-status overrides set --role critique|implement [--model MODEL] [--effort EFFORT] [--provider PROVIDER] [--ttl SECONDS]
   orchestrate-status overrides get [--role critique|implement]
@@ -44,6 +46,22 @@ RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
 STEP_NAMES = ["Plan", "Critique plan", "Implement", "Open PR", "Review PR", "Apply edits", "Deploy"]
 STEP_ACTORS = ["Claude", "gpt-5.6-sol", "gpt-5.6-sol·med", "driver", "Claude", "gpt-5.6-sol·med", "gated"]
+MAX_RESUME_COMMAND_LENGTH = 1000
+
+
+def resume_command_arg(value):
+    """Validate a secret-free, copy-only resume command for status storage."""
+    if not value or not value.strip():
+        raise argparse.ArgumentTypeError("resume command must not be empty")
+    if len(value) > MAX_RESUME_COMMAND_LENGTH:
+        raise argparse.ArgumentTypeError(
+            f"resume command must be at most {MAX_RESUME_COMMAND_LENGTH} characters"
+        )
+    if not value.isprintable():
+        raise argparse.ArgumentTypeError(
+            "resume command must not contain non-printable or control characters"
+        )
+    return value
 
 def path(rid):
     rid = os.path.basename(rid)
@@ -166,6 +184,7 @@ def main():
     p.add_argument("--driver", default=None)  # for one-click restart
     p.add_argument("--pid-start", default=None); p.add_argument("--pgid", type=int, default=None)
     p.add_argument("--plan", default=None); p.add_argument("--worktree", action="store_true")
+    p.add_argument("--resume-command", type=resume_command_arg, default=None)
     p.add_argument("--env", action="append", default=[])
 
     p = sub.add_parser("step"); common(p)
@@ -199,6 +218,10 @@ def main():
     p = sub.add_parser("checkpoint"); common(p)
     p.add_argument("--name", default=None); p.add_argument("--continuation", default=None)
     p.add_argument("--clear", action="store_true")
+    p = sub.add_parser("resume-command"); common(p)
+    resume = p.add_mutually_exclusive_group(required=True)
+    resume.add_argument("--command", type=resume_command_arg)
+    resume.add_argument("--clear", action="store_true")
     p = sub.add_parser("rm"); common(p)
     p = sub.add_parser("heartbeat"); common(p); p.add_argument("--pid", type=int, default=None)
     p = sub.add_parser("execution"); common(p)
@@ -247,6 +270,7 @@ def main():
               "cwd": a.cwd, "repoRoot": a.repo_root or a.cwd, "driver": a.driver,
               "pidStart": a.pid_start, "pgid": a.pgid,
               "pidCwd": a.cwd, "worker": None,
+              "resumeCommand": a.resume_command,
               "restart": {"plan": a.plan, "dedicatedWorktree": a.worktree, "env": restart_env},
               "pr": None, "metrics": {}, "gate": None, "steps": steps})
 
@@ -382,6 +406,11 @@ def main():
             r["checkpoint"] = {"name": a.name, "continuation": a.continuation}
         else:
             sys.exit("checkpoint requires --name or --clear")
+        save(r)
+
+    elif a.cmd == "resume-command":
+        r = need(a.id)
+        r["resumeCommand"] = None if a.clear else a.command
         save(r)
 
     elif a.cmd == "heartbeat":

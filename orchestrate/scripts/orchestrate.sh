@@ -706,9 +706,13 @@ COMMIT_SUBJECT="$(awk 'NF { line=$0 } END { print line }' "$IMPL" | tr -d '\r')"
 COMMIT_SUBJECT="${COMMIT_SUBJECT:0:200}"
 git add -A -- ':!PLAN-*.md' || die "driver could not stage verified changes"
 if git diff --cached --quiet; then
-  ALREADY_AHEAD="$(git rev-list --count "origin/$BASE..HEAD" 2>/dev/null || echo 0)"
-  [[ "$DEDICATED_WORKTREE" != "1" || ( "$RESUME" == "1" && "$ALREADY_AHEAD" -ge 1 ) ]] || \
-    die "Codex changed nothing in the worktree (see $IMPL) — aborting."
+  # An approval-only response is a valid gate even when Codex has not changed files.
+  # Apply the empty-diff guard only to ordinary implementation responses.
+  if [[ -z "$APPROVAL_REQUEST" ]]; then
+    ALREADY_AHEAD="$(git rev-list --count "origin/$BASE..HEAD" 2>/dev/null || echo 0)"
+    [[ "$DEDICATED_WORKTREE" != "1" || ( "$RESUME" == "1" && "$ALREADY_AHEAD" -ge 1 ) ]] || \
+      die "Codex changed nothing in the worktree (see $IMPL) — aborting."
+  fi
 else
   git commit -m "$COMMIT_SUBJECT" || die "driver could not commit verified changes"
 fi
