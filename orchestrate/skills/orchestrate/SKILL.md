@@ -59,7 +59,7 @@ Invoke `/orchestrate review <topic>` in the repo. From another cwd use `/orchest
 4. With no blocking findings, continue to step 7. Otherwise increment `review.iteration` in run JSON and resume the exact implementation session:
 
 ```bash
-codex exec resume <session-id> -c model_reasoning_effort=medium \
+codex exec resume <session-id> -c model_reasoning_effort=medium \  # medium is intentional: fixes are smaller than the implement
   "Address these findings and run relevant checks; do not push. <findings>" \
   </dev/null > /tmp/orch-fix.md
 ```

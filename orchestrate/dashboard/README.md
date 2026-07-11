@@ -77,3 +77,8 @@ Mutating browser requests with `Sec-Fetch-Site: cross-site` are rejected. Normal
 same-origin navigation, `Sec-Fetch-Site: none`, and headerless CLI/curl requests
 remain supported. This is CSRF hardening, not a replacement for the tailnet trust
 boundary; never enable Funnel for this dashboard.
+
+## Run lifecycle extras
+`orchestrate-status pause|cancel [--reason]|checkpoint|execution --id <id>` — pause/resume
+bookkeeping, cancel with a recorded reason, persist a named checkpoint, and update
+execution state for approval flows (used by the driver's approval gates and resume paths).
