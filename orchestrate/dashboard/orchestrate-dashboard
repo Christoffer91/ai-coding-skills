@@ -316,14 +316,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
     def _trusted_local_request(self):
-        host = self.headers.get("Host", "").split(":", 1)[0].lower()
-        origin = self.headers.get("Origin")
-        if host not in ("127.0.0.1", "localhost", "[::1]"):
+        """Loopback direct, or Tailscale Serve (proxies from loopback with a
+        *.ts.net Host). Cross-site browser POSTs keep failing the Origin rule."""
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
             return False
+        local_hosts = ("127.0.0.1", "localhost", "[::1]")
+        host = self.headers.get("Host", "").split(":", 1)[0].lower()
+        host_ok = host in local_hosts or host.endswith(".ts.net")
+        if not host_ok:
+            return False
+        origin = self.headers.get("Origin")
         if origin:
             parsed = urllib.parse.urlparse(origin)
-            if parsed.scheme != "http" or (parsed.hostname or "").lower() not in ("127.0.0.1", "localhost", "::1"):
-                return False
+            oh = (parsed.hostname or "").lower()
+            if parsed.scheme == "http" and oh in ("127.0.0.1", "localhost", "::1"):
+                return True
+            if parsed.scheme == "https" and oh.endswith(".ts.net") and oh == host:
+                return True
+            return False
         return True
 
     def _json_body(self):
@@ -333,6 +343,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ValueError("Content-Type must be application/json")
         raw = self.headers.get("Content-Length")
         if raw is None:
+            if (self.headers.get("Transfer-Encoding") or "").lower() == "chunked":
+                body = b""
+                while True:
+                    size = int(self.rfile.readline(64).split(b";")[0].strip() or b"0", 16)
+                    if size == 0:
+                        self.rfile.readline()
+                        break
+                    if len(body) + size > 512 * 1024:
+                        raise ValueError("body too large")
+                    body += self.rfile.read(size)
+                    self.rfile.readline()
+                try:
+                    return json.loads(body or b"{}")
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSON body: {exc}") from exc
             raise ValueError("Content-Length required")
         try:
             size = int(raw)

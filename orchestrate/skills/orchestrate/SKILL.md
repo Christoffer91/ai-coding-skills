@@ -28,6 +28,13 @@ For an in-session gate, call `PushNotification` once with an actionable sentence
 3. Locate and read repo memory when `.ai/memory-map.json` exists. Use memctl only for durable project facts, never loop checkpoints.
 4. Read `.ai/orchestrate.toml` if present. Absence means deploy is human-gated.
 5. The loop state is `~/.orchestrate/runs/<id>.json`; implementation artifacts are under `~/.orchestrate/artifacts/<id>/`.
+6. **Dashboard emitter — bootstrap, don't skip silently.** If `command -v orchestrate-status` fails but
+   `~/.claude/skills/orchestrate/dashboard/orchestrate-status` exists, symlink BOTH scripts onto PATH now
+   (`ln -sf ~/.claude/skills/orchestrate/dashboard/orchestrate-{status,dashboard} ~/.local/bin/`) and use
+   the absolute path for this session if `~/.local/bin` isn't on PATH. The emitter's no-op-when-missing
+   design is for machines WITHOUT the dashboard — on a machine that has it, running without emitting is a
+   bug (the user watches localhost:4600 and sees nothing). If the dashboard dir doesn't exist either,
+   say so once in the first status output instead of failing.
 
 ## Steps 1–4 — plan and execute
 
