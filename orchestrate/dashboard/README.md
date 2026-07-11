@@ -56,3 +56,18 @@ your Claude chat so the dashboard lines up with your tabs:
 current step + live activity note, colored liveness, and "changed Xs ago" per run.
 Flags: `--interval 2` (refresh), `--once` (print and exit), `--all` (include old
 done runs). Ctrl-C quits.
+
+## Mobile access (Tailscale)
+The dashboard binds to 127.0.0.1 only — expose it to YOUR devices (never the
+public internet) with Tailscale Serve:
+1. Install Tailscale on the machine and phone; log both into the same tailnet.
+2. One-time on the tailnet: enable **HTTPS certificates** (Serve prompts with a
+   link). Leave **Funnel OFF** — the API can merge PRs and restart runs and has
+   no auth layer; tailnet device identity IS the auth.
+3. `tailscale serve --bg http://127.0.0.1:4600` → prints your private
+   `https://<machine>.<tailnet>.ts.net` URL (TLS automatic, tailnet-only).
+4. Phone: open the URL in the browser → Share → Add to Home Screen. The
+   dashboard becomes an app: gates, model overrides, /watch and /console all work.
+5. Disable anytime: `tailscale serve --https=443 off`.
+Pairs with the ntfy notify hook: the phone gets pinged at gates, the home-screen
+app is where you answer.
