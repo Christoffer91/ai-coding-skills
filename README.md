@@ -11,7 +11,15 @@ A small collection of portable **Claude Code + OpenAI Codex CLI** skills. One to
 
 ## Install a skill
 
-Each skill folder has its own `README.md`; `orchestrate/` also ships an `install.sh` that installs both sides:
+Quickest — this repo is a Claude Code **plugin marketplace** (skill-only installs, no clone needed):
+
+```
+/plugin marketplace add Christoffer91/ai-coding-skills
+/plugin install orchestrate@ai-coding-skills
+/plugin install pipeline@ai-coding-skills
+```
+
+For orchestrate's full runtime (localhost dashboard, headless driver, Codex-side skill) clone and run the installer; each skill folder has its own `README.md`:
 
 ```bash
 cd orchestrate && ./install.sh        # Claude skill + dashboard, and codex/ side if ~/.codex exists
