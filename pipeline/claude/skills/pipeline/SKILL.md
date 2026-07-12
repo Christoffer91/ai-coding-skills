@@ -28,8 +28,10 @@ One entrypoint skill to enforce a standard pipeline: continuity tracking, securi
    symlink the emitter onto PATH if missing (`ln -sf …/dashboard/orchestrate-status ~/.local/bin/`),
    and if `curl -s -o /dev/null -w '%{http_code}' localhost:4600` isn't `200`, start the server
    (`nohup ~/.claude/skills/orchestrate/dashboard/orchestrate-dashboard >/tmp/orch-dashboard.log 2>&1 &`;
-   both tools resolve PATH symlinks safely). Then `orchestrate-status start --id <repo>-<topic> …` so the
-   run appears immediately, and emit `step`/`pr`/`gate` as the pipeline progresses. Do this at pipeline
+   both tools resolve PATH symlinks safely). Then `orchestrate-status start --id <repo>-<topic> …
+   --log ~/.orchestrate/artifacts/<id>/run.log` (create the dir; tee the round's codex/tool output into
+   that file — the console viewer shows only the run's own recorded log, no fallback) so the run appears
+   immediately, and emit `step`/`pr`/`gate` as the pipeline progresses. Do this at pipeline
    start, not reactively when the user notices an empty page.
    **Emit discipline:** use a FRESH id per topic/round — never reuse a prior round's id (suffix a round
    number if the topic repeats); emit `step --n N --state active|done` at each real transition; and

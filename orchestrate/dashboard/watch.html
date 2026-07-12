@@ -89,7 +89,7 @@ function render(){
       l2=`<div class="l2"><span class="actor ${k}">${esc(s.actor||"")}</span> <b>${esc(s.name||"")}</b>${note}${inStep}</div>`;
     }
     const ex=[];
-    if(active)ex.push(`<a href="/console?id=${encodeURIComponent(r.id)}">console →</a>`);
+    if(active&&r.hasConsole)ex.push(`<a href="/console?id=${encodeURIComponent(r.id)}">console →</a>`);
     if(r.pr&&r.pr.number)ex.push(`<a href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">PR #${esc(r.pr.number)}</a>`);
     const t=(r.metrics||{}).tests; if(t)ex.push("tests "+esc(t));
     if(r.gate&&!r.answered)ex.push(`<span class="gate">gate: ${esc(String(r.gate.question).slice(0,70))} → answer on <a href="/">the dashboard</a></span>`);

@@ -71,6 +71,8 @@ def load_runs():
             r["health"] = "rejected"
         elif status == "done":
             r["health"] = "done"
+        elif r.get("steps") and all(s.get("state") == "done" for s in r["steps"]):
+            r["health"] = "done"          # every step done: finished round missing its terminal emit
         elif r.get("gate") and not r.get("answered"):
             r["health"] = "waiting"       # blocked on you, not a liveness concern
         elif alive is False:
@@ -85,6 +87,7 @@ def load_runs():
             restart_reason = "automatic restart is offered only for stalled, exited, or failed runs"
         r["restartable"] = restart_reason is None
         r["restartReason"] = restart_reason
+        r["hasConsole"] = console_log_for(r) is not None
         out.append(r)
     return out
 
@@ -239,29 +242,26 @@ def cleanup_retained_runs(now=None):
         except OSError: pass
 
 
+def console_log_for(record):
+    """This run's own console log: recorded consoleLog -> metrics.log -> its artifacts dir.
+    Deliberately NO global/TMPDIR fallback — showing another run's log is worse than showing none."""
+    for rec in (record.get("consoleLog"), (record.get("metrics") or {}).get("log")):
+        if rec and os.path.isfile(rec):
+            return rec
+    art = os.path.join(BASE, "artifacts", os.path.basename(record.get("id") or ""))
+    logs = sorted(glob.glob(os.path.join(art, "*.log")), key=os.path.getmtime, reverse=True)
+    return logs[0] if logs else None
+
+
 def resolve_console_log(rid):
-    """Best console log for a run: recorded metric -> artifacts dir -> newest live TMPDIR clog."""
     if not rid:
         return None
     try:
-        with open(os.path.join(RUNS, rid + ".json")) as fh:
+        with open(os.path.join(RUNS, os.path.basename(rid) + ".json")) as fh:
             r = json.load(fh)
     except Exception:
         return None
-    rec = (r.get("metrics") or {}).get("log")
-    if rec and os.path.isfile(rec):
-        return rec
-    art = os.path.join(BASE, "artifacts", rid)
-    logs = sorted(glob.glob(os.path.join(art, "*.log")), key=os.path.getmtime, reverse=True)
-    if logs:
-        return logs[0]
-    if r.get("status") not in ("done", "failed", "fail"):
-        import tempfile
-        cand = [f for f in glob.glob(os.path.join(tempfile.gettempdir(), "orch-clog-*.log"))
-                if os.path.getsize(f) > 4096]
-        if cand:
-            return max(cand, key=os.path.getmtime)
-    return None
+    return console_log_for(r)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

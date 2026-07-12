@@ -6,8 +6,8 @@ driver at each step. No dependencies (Python 3 stdlib).
 
   orchestrate-status start  --id ID --repo R --topic T --title "…" --branch B \
                             [--planner "Opus 4.8"] [--executor "gpt-5.6-sol · medium"] \
-                            [--mode supervised] [--resume-command "…"]
-  orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"]
+                            [--mode supervised] [--resume-command "…"] [--log /abs/run.log]
+  orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"] [--log /abs/run.log]
   orchestrate-status pr     --id ID --number N --url U [--state OPEN]
   orchestrate-status metric --id ID --key tests --value "12/12"
   orchestrate-status worker --id ID --pid PID --pid-start TOKEN --pgid PGID --cwd DIR
@@ -186,10 +186,12 @@ def main():
     p.add_argument("--plan", default=None); p.add_argument("--worktree", action="store_true")
     p.add_argument("--resume-command", type=resume_command_arg, default=None)
     p.add_argument("--env", action="append", default=[])
+    p.add_argument("--log", default=None, help="absolute path to THIS run's console/output log")
 
     p = sub.add_parser("step"); common(p)
     p.add_argument("--n", type=int, required=True); p.add_argument("--state", required=True)
     p.add_argument("--note", default=None); p.add_argument("--actor", default=None); p.add_argument("--pid", type=int, default=None)
+    p.add_argument("--log", default=None, help="absolute path to THIS run's console/output log")
 
     p = sub.add_parser("pr"); common(p)
     p.add_argument("--number", required=True); p.add_argument("--url", required=True); p.add_argument("--state", default="OPEN")
@@ -270,6 +272,7 @@ def main():
               "cwd": a.cwd, "repoRoot": a.repo_root or a.cwd, "driver": a.driver,
               "pidStart": a.pid_start, "pgid": a.pgid,
               "pidCwd": a.cwd, "worker": None,
+              "consoleLog": os.path.abspath(a.log) if a.log else None,
               "resumeCommand": a.resume_command,
               "restart": {"plan": a.plan, "dedicatedWorktree": a.worktree, "env": restart_env},
               "pr": None, "metrics": {}, "gate": None, "steps": steps})
@@ -288,6 +291,7 @@ def main():
         if a.actor: r["steps"][i]["actor"] = a.actor
         r["step"] = a.n
         if a.pid: r["pid"] = a.pid
+        if a.log: r["consoleLog"] = os.path.abspath(a.log)
         if r.get("status") not in ("await", "done", "failed"):
             r["status"] = "review" if (a.n == 6 and a.state == "active") else \
                           "fail" if a.state == "fail" else "running"

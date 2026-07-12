@@ -517,7 +517,7 @@ function card(r,compact){
       ${m["tokens.total"]?`<div><div class="lbl">tokens</div><div class="v small">${esc(fmtTokens(m["tokens.total"]))}</div></div>`:""}
       ${runTok(r)?`<div><div class="lbl">tokens</div><div class="v small">${fmtTok(runTok(r))}</div></div>`:""}</div>
     <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.6-sol")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
-      ${!["done","failed"].includes(st)?`<a class="pr" href="/console?id=${encodeURIComponent(r.id)}" title="Live console output for this run">console ↗</a>`:""}
+      ${(!["done","failed"].includes(st)&&r.hasConsole)?`<a class="pr" href="/console?id=${encodeURIComponent(r.id)}" title="Live console output for this run">console ↗</a>`:""}
       ${prBit(r)}</div>`;
   return `<div class="card ${open[r.id]?'open':''} ${compact?'compact':''}" data-id="${esc(r.id)}" style="border-left:4px solid ${edge}">
     <div class="head" data-toggle="${esc(r.id)}" tabindex="0" role="button" aria-expanded="${!!open[r.id]}">

@@ -69,6 +69,10 @@ codex exec resume <session-id> -c model_reasoning_effort=medium \  # medium is i
 
 5. Commit linked-worktree edits outside the sandbox, push to the same PR, and repeat review. Stop and escalate after `maxIterations` (default 3).
 6. For deploy, apply `/risk-assess` plus `references/auto-deploy-safety.md`. Merge/deploy only when user-set `deploy_authorized=true`, risk is low, CI is green, the PR is mergeable, and a deploy mechanism is configured. Otherwise hand deploy to the user.
+7. **Terminal emit — mandatory.** However steps 5–7 end, close the run on the dashboard:
+   `orchestrate-status done --id <id>` after a merge/deploy or a clean hand-back to the user,
+   `done --status failed` (or `fail`) on the iteration cap or an abandoned round. Leaving the run
+   in `handoff`/`running` after the work is finished is the false-"stalled" bug.
 
 ## Live status
 
@@ -76,7 +80,8 @@ The driver emits automatically. For in-session runs (server + emitter bootstrap 
 
 ```bash
 ID="$(basename "$PWD")-<topic>"   # FRESH id per topic/round — never reuse a prior round's id
-orchestrate-status start --id "$ID" --repo <repo> --topic <topic> --title "<title>" --branch orch/<topic>
+LOG=~/.orchestrate/artifacts/$ID/run.log; mkdir -p "$(dirname "$LOG")"   # THIS run's own log
+orchestrate-status start --id "$ID" --repo <repo> --topic <topic> --title "<title>" --branch orch/<topic> --log "$LOG"
 orchestrate-status step --id "$ID" --n <1-7> --state active|done   # at each real transition
 orchestrate-status pr --id "$ID" --number <n> --url <url>
 orchestrate-status gate --id "$ID" --question "Deploy?" --option "Merge & deploy:primary" --option "Leave PR open"
@@ -92,6 +97,9 @@ Emit discipline is not optional telemetry hygiene — it is what the card render
   abandoned rounds — a finished run without a terminal emit keeps rendering as active.
 - The dashboard infers "stalled" from time-since-last-emit; a completed round MUST emit done/fail,
   and a new round MUST start a new id, or the card will misreport.
+- **Own log, always.** Pass `--log` on `start` (or `step`) pointing at THIS run's log file, and
+  tee/redirect the run's codex output into it — the console viewer shows only the run's recorded
+  log and has no fallback, so a run without one has no console view.
 
 Also call `PushNotification` and `AskUserQuestion` for in-session gates; the localhost dashboard is optional desktop status, not the phone transport.
 

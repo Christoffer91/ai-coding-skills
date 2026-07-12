@@ -78,6 +78,16 @@ class EmitterTests(unittest.TestCase):
         self.status("rm", "--id", "t")
         self.assertFalse((self.home / ".orchestrate/runs/t.json").exists())
 
+    def test_start_and_step_record_this_runs_console_log(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T",
+                    "--branch", "b", "--log", "relative.log")
+        self.assertTrue(os.path.isabs(self.data()["consoleLog"]))
+        self.assertTrue(self.data()["consoleLog"].endswith("relative.log"))
+        self.status("step", "--id", "t", "--n", "2", "--state", "active", "--log", "/tmp/other.log")
+        self.assertEqual(self.data()["consoleLog"], "/tmp/other.log")
+        self.status("step", "--id", "t", "--n", "2", "--state", "done")
+        self.assertEqual(self.data()["consoleLog"], "/tmp/other.log")  # unchanged without --log
+
     def test_resume_command_start_update_clear_and_validation(self):
         self.status(
             "start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b",
@@ -248,6 +258,30 @@ class DashboardTests(unittest.TestCase):
         path = self.runs / f"{rid}.json"
         path.write_text(json.dumps(data))
         return path
+
+    def test_console_log_is_per_run_with_no_global_fallback(self):
+        # A run's console must never fall back to another run's (or any global) log.
+        with tempfile.TemporaryDirectory() as td:
+            own = Path(td) / "own.log"
+            own.write_text("mine\n")
+            with_log = {"id": "a", "consoleLog": str(own), "metrics": {}}
+            self.assertEqual(self.dashboard.console_log_for(with_log), str(own))
+            metric_log = {"id": "b", "consoleLog": None, "metrics": {"log": str(own)}}
+            self.assertEqual(self.dashboard.console_log_for(metric_log), str(own))
+            bare = {"id": "no-such-run", "consoleLog": None, "metrics": {}, "status": "running"}
+            self.assertIsNone(self.dashboard.console_log_for(bare))
+        src = DASHBOARD.read_text()
+        self.assertNotIn("orch-clog-", src)  # the global TMPDIR fallback must stay dead
+
+    def test_all_steps_done_renders_done_not_stalled(self):
+        old = int(time.time()) - 9999
+        steps = [{"n": i + 1, "state": "done"} for i in range(7)]
+        self.write_run("finished", status="running", updatedAt=old, steps=steps)
+        self.write_run("midstep", status="running", updatedAt=old,
+                       steps=[{"n": 1, "state": "done"}, {"n": 2, "state": "active"}])
+        health = {r["id"]: r["health"] for r in self.dashboard.load_runs()}
+        self.assertEqual(health["finished"], "done")
+        self.assertIn(health["midstep"], ("stale", "exited"))
 
     def test_tools_resolve_symlinked_install_to_real_files(self):
         # install.sh --link-bin and the skill bootstrap put symlinks in ~/.local/bin;
