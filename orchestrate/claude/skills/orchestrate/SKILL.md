@@ -100,6 +100,10 @@ Emit discipline is not optional telemetry hygiene — it is what the card render
 - **Own log, always.** Pass `--log` on `start` (or `step`) pointing at THIS run's log file, and
   tee/redirect the run's codex output into it — the console viewer shows only the run's recorded
   log and has no fallback, so a run without one has no console view.
+- **Heartbeat through long legs.** In-session runs get a lenient stall threshold (~15 min of
+  silence), but when you background a leg expected to run longer (a big codex exec, a long test
+  run), wrap it with a heartbeat so the card stays live:
+  `( while kill -0 $LEG_PID 2>/dev/null; do orchestrate-status heartbeat --id "$ID"; sleep 60; done ) &`
 
 Also call `PushNotification` and `AskUserQuestion` for in-session gates; the localhost dashboard is optional desktop status, not the phone transport.
 

@@ -64,6 +64,7 @@ function stateOf(r){
   if(r.gate&&!r.answered)return["needs","NEEDS YOU","◆"];
   if(st==="handoff"||r.health==="handoff")return["handoff","with Claude","⇄"];
   if(r.health==="exited")return["dead","not running","■"];
+  if(r.health)return r.health==="stale"?["stale","stalled","⚠"]:["live","live","●"]; // server truth wins
   const a=r.staleSecs!=null?r.staleSecs:now()-(r.updatedAt||now());
   if(a>STALE)return["stale","stalled","⚠"];
   return["live","live","●"];

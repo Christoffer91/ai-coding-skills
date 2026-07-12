@@ -273,6 +273,20 @@ class DashboardTests(unittest.TestCase):
         src = DASHBOARD.read_text()
         self.assertNotIn("orch-clog-", src)  # the global TMPDIR fallback must stay dead
 
+    def test_session_runs_get_lenient_stall_threshold(self):
+        # No worker pid = in-session run: quiet planning for minutes is normal, not "stalled".
+        quiet = int(time.time()) - 300   # 5 min silent
+        long_quiet = int(time.time()) - 1200  # 20 min silent
+        self.write_run("session-quiet", status="running", updatedAt=quiet, pid=None)
+        self.write_run("session-long", status="running", updatedAt=long_quiet, pid=None)
+        health = {r["id"]: r["health"] for r in self.dashboard.load_runs()}
+        self.assertEqual(health["session-quiet"], "live")
+        self.assertEqual(health["session-long"], "stale")
+        with mock.patch.object(self.dashboard, "pid_alive", return_value=True):
+            self.write_run("driver-quiet", status="running", updatedAt=quiet, pid=4242)
+            health = {r["id"]: r["health"] for r in self.dashboard.load_runs()}
+        self.assertEqual(health["driver-quiet"], "stale")  # driver streams; 5 min silent IS stalled
+
     def test_all_steps_done_renders_done_not_stalled(self):
         old = int(time.time()) - 9999
         steps = [{"n": i + 1, "state": "done"} for i in range(7)]

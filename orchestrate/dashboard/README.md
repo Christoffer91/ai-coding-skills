@@ -39,6 +39,14 @@ At a gate (e.g. deploy), the run emits `gate …` then blocks on `wait`. The das
 - `orchestrate-status` — the status emitter / gate-answer waiter
 - `dashboard.html` — the page the server serves (served as-is; edit to restyle)
 
+## Always-on (macOS launchd)
+The dashboard/watchdog die with the session that started them. For an always-on setup that
+survives reboots, run the installer YOURSELF (it installs login agents — deliberate persistence):
+```bash
+bash launchd/install-launchd.sh     # installs + loads com.orchestrate.{dashboard,watchdog}
+```
+Logs land in `~/.orchestrate/logs/*-launchd.log`; uninstall command is printed by the installer.
+
 ## Keeping runs on track — orchestrate-watchdog
 `./orchestrate-watchdog` (run alongside the dashboard) polls the runs and, for the
 cases the driver's own auto-recovery can't reach (its whole process died, or an

@@ -37,7 +37,9 @@ One entrypoint skill to enforce a standard pipeline: continuity tracking, securi
    number if the topic repeats); emit `step --n N --state active|done` at each real transition; and
    ALWAYS end the round with a terminal `orchestrate-status done --id <id>` (or a fail state), including
    handoffs. The dashboard infers "stalled" from time-since-last-emit; a completed round MUST emit
-   done/fail, and a new round MUST start a new id, or the card will misreport.
+   done/fail, and a new round MUST start a new id, or the card will misreport. For backgrounded legs
+   expected to run long, wrap them with an `orchestrate-status heartbeat` loop per the orchestrate
+   skill's emit discipline.
 
 ### 2. Coverage Matrix
 Determine which checks apply (REQUIRED / OPTIONAL / NOT_APPLICABLE):

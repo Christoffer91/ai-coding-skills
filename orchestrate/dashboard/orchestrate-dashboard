@@ -22,7 +22,10 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import overrides
 HTML = os.path.join(HERE, "dashboard.html")
-STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "75"))  # no update for this long => "stalled?"
+STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "75"))  # driver runs stream notes every ~10s
+# In-session runs (no worker pid) legitimately go quiet for a long planning/review step —
+# don't cry "stalled" until this much silence.
+SESSION_STALE_SECS = int(os.environ.get("ORCH_SESSION_STALE_SECS", "900"))
 RETENTION_SECS = 7 * 24 * 60 * 60
 
 
@@ -77,7 +80,7 @@ def load_runs():
             r["health"] = "waiting"       # blocked on you, not a liveness concern
         elif alive is False:
             r["health"] = "exited"        # the worker process is gone
-        elif age > STALE_SECS:
+        elif age > (STALE_SECS if r.get("pid") else SESSION_STALE_SECS):
             r["health"] = "stale"         # no update in a while — long step or a hang
         else:
             r["health"] = "live"          # updated recently / worker alive
