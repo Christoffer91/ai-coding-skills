@@ -1,0 +1,21 @@
+{
+  "name": "ai-coding-skills",
+  "description": "Portable Claude Code + Codex CLI skills: the orchestrate dual-brain shipping loop and the pipeline coverage-matrix workflow.",
+  "owner": {
+    "name": "Christoffer91"
+  },
+  "plugins": [
+    {
+      "name": "orchestrate",
+      "description": "Dual-brain plan → execute → review → ship loop: Claude plans and reviews the PR, OpenAI Codex CLI critiques the plan, writes the code, opens the PR, and applies review edits. Deploy is risk-gated. Skill only — run orchestrate/install.sh from a clone for the dashboard, driver, and Codex-side skill.",
+      "source": "./orchestrate/claude",
+      "category": "development"
+    },
+    {
+      "name": "pipeline",
+      "description": "Standard delivery pipeline for non-trivial work: coverage matrix (security/risk/review/tests/docs), adaptive routing, verification gates, and PR-ready output. Routes real implementation into the orchestrate loop.",
+      "source": "./pipeline/claude",
+      "category": "development"
+    }
+  ]
+}

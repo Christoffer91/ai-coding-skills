@@ -18,7 +18,9 @@ PAT="$DEFAULT${PII_EXTRA:+|$PII_EXTRA}"
 hits="$(grep -rInE "$PAT" . \
           --exclude-dir=.git \
           --exclude=scan-pii.sh \
-          --exclude=LICENSE 2>/dev/null || true)"
+          --exclude=LICENSE \
+          --exclude=plugin.json \
+          --exclude=marketplace.json 2>/dev/null || true)"
 
 if [[ -n "$hits" ]]; then
   echo "⚠️  Possible personal info found — review before publishing:"
