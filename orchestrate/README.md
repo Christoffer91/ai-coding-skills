@@ -17,6 +17,20 @@ Keep expensive judgment work on Claude; hand mechanical, well-specified executio
 
 No API keys are needed when Codex uses ChatGPT OAuth and `gh` uses its keyring token.
 
+## What do you actually need?
+
+The package is layered — only the skill itself is the product; the rest is opt-in:
+
+1. **The skill** (required): the plan → execute → review loop. Fully functional alone; all
+   `orchestrate-status` telemetry calls no-op when the dashboard tools aren't installed.
+2. **Dashboard** (optional): a localhost status page with click-to-answer gates. Nice for
+   watching multiple runs; nothing depends on it.
+3. **Watchdog** (optional, on top of the dashboard): flags dead/stalled runs for one-click
+   restart. Skip it unless you run many unattended loops.
+4. **launchd always-on** (optional, macOS): keeps dashboard+watchdog running across reboots.
+   A separate script you run deliberately (`dashboard/launchd/install-launchd.sh`); nothing
+   installs persistence for you.
+
 ## Install
 
 Quickest (skill only, via Claude Code's plugin system):
