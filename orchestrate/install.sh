@@ -22,7 +22,7 @@ for command_name in codex gh git; do
   fi
 done
 
-[[ -f "$HERE/skills/orchestrate/SKILL.md" && -d "$HERE/dashboard" && \
+[[ -f "$HERE/claude/skills/orchestrate/SKILL.md" && -d "$HERE/dashboard" && \
    -f "$HERE/scripts/orchestrate.sh" ]] || {
   echo "  ✗ incomplete orchestrate package" >&2
   exit 1
@@ -34,8 +34,8 @@ if [[ -e "$DEST" ]]; then
   echo "  ↩ existing install backed up -> $backup"
 fi
 mkdir -p "$DEST/references"
-cp "$HERE/skills/orchestrate/SKILL.md" "$DEST/SKILL.md"
-cp "$HERE/skills/orchestrate/references/"*.md "$DEST/references/"
+cp "$HERE/claude/skills/orchestrate/SKILL.md" "$DEST/SKILL.md"
+cp "$HERE/claude/skills/orchestrate/references/"*.md "$DEST/references/"
 cp -R "$HERE/dashboard" "$DEST/dashboard"
 chmod +x "$HERE/scripts/orchestrate.sh"
 for tool in orchestrate-dashboard orchestrate-status orchestrate-watchdog; do
@@ -43,6 +43,19 @@ for tool in orchestrate-dashboard orchestrate-status orchestrate-watchdog; do
 done
 echo "  ✓ skill + dashboard installed -> $DEST"
 echo "  ✓ driver ready -> $HERE/scripts/orchestrate.sh"
+
+# Optional Codex-side skill (the executor's view of the same loop).
+CODEX_DEST="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
+if [[ -d "$HERE/codex/skills/orchestrate" && -d "$(dirname "$CODEX_DEST")" ]]; then
+  mkdir -p "$CODEX_DEST"
+  if [[ -e "$CODEX_DEST/orchestrate" ]]; then
+    mv "$CODEX_DEST/orchestrate" "$CODEX_DEST/orchestrate.bak-$(date +%Y%m%d%H%M%S)"
+  fi
+  cp -R "$HERE/codex/skills/orchestrate" "$CODEX_DEST/orchestrate"
+  echo "  ✓ codex skill installed -> $CODEX_DEST/orchestrate"
+else
+  echo "  · codex skill skipped (no ~/.codex; set CODEX_SKILLS_DIR to force)"
+fi
 
 if [[ "$link_bin" == "1" ]]; then
   mkdir -p "$BIN_DEST"

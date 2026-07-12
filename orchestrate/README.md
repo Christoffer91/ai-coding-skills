@@ -25,7 +25,7 @@ No API keys are needed when Codex uses ChatGPT OAuth and `gh` uses its keyring t
 ./install.sh --link-bin
 ```
 
-The installer backs up an existing skill, installs the skill plus dashboard, checks required CLIs, and prints the dashboard/watchdog commands. The optional contract snippets remain available for global model-role defaults:
+The installer backs up an existing skill, installs the Claude skill plus dashboard, installs the Codex-side skill into `~/.codex/skills` when a `~/.codex` directory exists (override with `CODEX_SKILLS_DIR`), checks required CLIs, and prints the dashboard/watchdog commands. The optional contract snippets remain available for global model-role defaults:
 
 - `contract/CLAUDE.snippet.md` → append to `~/.claude/CLAUDE.md`
 - `contract/AGENTS.snippet.md` → append to `~/.codex/AGENTS.md`
@@ -59,8 +59,9 @@ Repo-local `test_cmd`, `build_cmd`, and `eval_cmd` entries add an independent pr
 ## Layout
 
 ```text
-skills/orchestrate/SKILL.md              conductor and validated review entry
-skills/orchestrate/references/           deploy safety, loop mechanics, Desktop bridge
+claude/skills/orchestrate/SKILL.md       Claude Code conductor and validated review entry
+claude/skills/orchestrate/references/    deploy safety, loop mechanics, Desktop bridge
+codex/skills/orchestrate/                the Codex CLI side: skill, references, validator
 scripts/orchestrate.sh                   headless Codex-leg driver
 scripts/orchestrate_verify.py            safe TOML/argv verifier and test-delta classifier
 dashboard/orchestrate-dashboard          localhost status server/UI

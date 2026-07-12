@@ -1,0 +1,94 @@
+[
+  {
+    "id": "dry-run",
+    "mode": "DRY_RUN",
+    "profile": "AUTO",
+    "spawn_roles": [],
+    "writes": false,
+    "terminal": "PLAN_REPORTED"
+  },
+  {
+    "id": "direct-qa",
+    "mode": "LOCAL",
+    "profile": "DIRECT",
+    "change_type": "Q&A",
+    "spawn_roles": [],
+    "spec_mode": "NONE",
+    "terminal": "ANSWERED"
+  },
+  {
+    "id": "fast-mechanical-change",
+    "mode": "LOCAL",
+    "profile": "FAST",
+    "spec_mode": "MICRO_SPEC",
+    "spawn_roles": [
+      "orchestrate_executor"
+    ],
+    "sol_ultra_calls": 0,
+    "focused_verification": true,
+    "terminal": "VERIFIED_LOCAL"
+  },
+  {
+    "id": "standard-spec-critique",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "spec_mode": "FULL_SPEC",
+    "spawn_roles": [
+      "orchestrate_planner",
+      "orchestrate_plan_critic",
+      "orchestrate_executor",
+      "orchestrate_reviewer"
+    ],
+    "planner_model": "gpt-5.6-sol",
+    "planner_effort": "ultra",
+    "critique_required": true,
+    "critique_off_execute": {
+      "executor_spawned": false,
+      "terminal": "AWAIT_APPROVAL"
+    },
+    "terminal": "VERIFIED_LOCAL"
+  },
+  {
+    "id": "deep-security-external-critique",
+    "mode": "SUPERVISED",
+    "profile": "DEEP",
+    "spec_mode": "FULL_SPEC",
+    "explorer": "orchestrate_explorer_deep",
+    "risk_gate": true,
+    "external_critique": "fable-with-opus-fallback",
+    "external_approval_required": true,
+    "writes_before_approval": false,
+    "terminal": "AWAIT_APPROVAL"
+  },
+  {
+    "id": "failure-escalation",
+    "mode": "LOCAL",
+    "starting_profile": "FAST",
+    "allowed_direction": "FAST->STANDARD->DEEP",
+    "diagnostic_skill": "systematic-debugging",
+    "silent_model_upgrade": false,
+    "review_fix_round_limit": 3,
+    "terminal": "REPLAN_OR_BLOCKED"
+  },
+  {
+    "id": "approved-plan-resume",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "contract": "APPROVED_FULL_SPEC",
+    "planner_spawned": false,
+    "critic_spawned": false,
+    "critique_disposition": "COMPLETE",
+    "contract_still_valid": true,
+    "resume_controller": "loop-controller",
+    "canonical_state_count": 1,
+    "terminal": "RESUMED"
+  },
+  {
+    "id": "pr-ready-stop-gate",
+    "mode": "PR_READY",
+    "profile": "STANDARD",
+    "external_action_requires_explicit_authorization": true,
+    "writes": true,
+    "terminal": "PR_READY_LOCAL"
+  }
+]

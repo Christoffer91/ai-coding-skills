@@ -1,0 +1,6 @@
+interface:
+  display_name: "Orchestrate"
+  short_description: "Run adaptive spec, critique, execution, and review routes"
+  default_prompt: "Use $orchestrate with the pipeline contract: FAST for approved micro-specs, STANDARD or DEEP for Sol Ultra full specs with fresh critique, then bounded Terra execution and verification."
+policy:
+  allow_implicit_invocation: false

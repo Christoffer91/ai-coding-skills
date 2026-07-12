@@ -121,7 +121,7 @@ local_base() {
 
 STATUS_BIN=""
 for candidate in "$(dirname "$SELF")/../dashboard/orchestrate-status" \
-                 "$(dirname "$SELF")/../skills/orchestrate/dashboard/orchestrate-status" \
+                 "$(dirname "$SELF")/../claude/skills/orchestrate/dashboard/orchestrate-status" \
                  "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status"; do
   [[ -x "$candidate" ]] && { STATUS_BIN="$candidate"; break; }
 done

@@ -21,7 +21,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "scripts" / "orchestrate.sh"
 VERIFY_HELPER = ROOT / "scripts" / "orchestrate_verify.py"
-DASHBOARD_DIR = ROOT / "skills/orchestrate/dashboard"
+DASHBOARD_DIR = ROOT / "claude/skills/orchestrate/dashboard"
 if not DASHBOARD_DIR.exists():
     DASHBOARD_DIR = ROOT / "dashboard"
 STATUS = DASHBOARD_DIR / "orchestrate-status"
@@ -30,7 +30,7 @@ OVERRIDES = DASHBOARD_DIR / "overrides.py"
 WATCHDOG = DASHBOARD_DIR / "orchestrate-watchdog"
 SYNC = ROOT / "scripts" / "sync-public.sh"
 CODEX_ORCHESTRATE = ROOT / "skills" / "codex" / "skills" / "orchestrate"
-CODEX_PIPELINE = ROOT / "skills" / "codex" / "skills" / "chansen-pipeline" / "SKILL.md"
+CODEX_PIPELINE = ROOT / "skills" / "codex" / "skills" / "pipeline" / "SKILL.md"
 CODEX_HANDOVER = ROOT / "skills" / "codex" / "skills" / "handover" / "SKILL.md"
 
 
@@ -81,9 +81,9 @@ class EmitterTests(unittest.TestCase):
     def test_resume_command_start_update_clear_and_validation(self):
         self.status(
             "start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b",
-            "--resume-command", "$chansen-pipeline resume parity",
+            "--resume-command", "$pipeline resume parity",
         )
-        self.assertEqual(self.data()["resumeCommand"], "$chansen-pipeline resume parity")
+        self.assertEqual(self.data()["resumeCommand"], "$pipeline resume parity")
 
         self.status("resume-command", "--id", "t", "--command", "codex resume --last")
         self.assertEqual(self.data()["resumeCommand"], "codex resume --last")
@@ -479,7 +479,7 @@ class DriverTests(unittest.TestCase):
         shutil.copy2(DRIVER, root / "scripts/orchestrate.sh")
         shutil.copy2(VERIFY_HELPER, root / "scripts/orchestrate_verify.py")
         (root / ".gitignore").write_text(".ai/\n")
-        status_dir = root / "skills/orchestrate/dashboard"
+        status_dir = root / "claude/skills/orchestrate/dashboard"
         status_dir.mkdir(parents=True)
         os.symlink(STATUS, status_dir / "orchestrate-status")
         (root / "PLAN-t.md").write_text("# plan\n")
@@ -1095,8 +1095,8 @@ class SyncScriptTests(unittest.TestCase):
             (target / "orchestrate/skills/orchestrate").mkdir(parents=True)
             (target / "orchestrate/skills/orchestrate/SKILL.md").write_text("old\n")
             (target / "orchestrate/contract").mkdir()
-            (target / "orchestrate/contract/keep.txt").write_text("keep\n")
-            executable(target / "scan-pii.sh", "#!/bin/sh\ntest -f orchestrate/skills/orchestrate/SKILL.md\ntest -f orchestrate/tests/test_orchestrate_hardening.py\necho scanned >> \"$SCAN_LOG\"\n")
+            (target / "orchestrate/contract/stale.txt").write_text("stale\n")
+            executable(target / "scan-pii.sh", "#!/bin/sh\ntest -f orchestrate/claude/skills/orchestrate/SKILL.md\ntest -f orchestrate/tests/test_orchestrate_hardening.py\ntest -f pipeline/codex/skills/pipeline/SKILL.md\necho scanned >> \"$SCAN_LOG\"\n")
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=target, check=True)
             subprocess.run(["git", "config", "user.email", "test@invalid"], cwd=target, check=True)
             subprocess.run(["git", "config", "user.name", "Test"], cwd=target, check=True)
@@ -1108,11 +1108,24 @@ class SyncScriptTests(unittest.TestCase):
             self.assertTrue((target / "orchestrate/scripts/orchestrate.sh").exists())
             self.assertTrue((target / "orchestrate/scripts/orchestrate_verify.py").exists())
             self.assertTrue((target / "orchestrate/tests/test_orchestrate_hardening.py").exists())
-            self.assertTrue((target / "orchestrate/contract/keep.txt").exists())
+            # Full replacement: the old layout and any stale public-only files are gone.
+            self.assertFalse((target / "orchestrate/contract/stale.txt").exists())
+            self.assertFalse((target / "orchestrate/skills").exists())
+            self.assertTrue((target / "orchestrate/contract/CLAUDE.snippet.md").exists())
             self.assertEqual(list((target / "orchestrate").rglob("*.pyc")), [])
-            synced_skill = (target / "orchestrate/skills/orchestrate/SKILL.md").read_text()
+            synced_skill = (target / "orchestrate/claude/skills/orchestrate/SKILL.md").read_text()
             self.assertNotEqual(synced_skill, "old\n")
-            self.assertNotIn("skills/orchestrate", synced_skill)
+            self.assertNotIn("claude/skills/orchestrate", synced_skill)
+            self.assertTrue((target / "orchestrate/codex/skills/orchestrate/SKILL.md").exists())
+            pipeline_skill = (target / "pipeline/codex/skills/pipeline/SKILL.md").read_text()
+            self.assertIn("name: pipeline", pipeline_skill)
+            private_token = "chan" + "sen"  # split so this file survives its own sync scan
+            for synced in (target / "orchestrate", target / "pipeline"):
+                for file in synced.rglob("*"):
+                    if file.is_file():
+                        self.assertNotIn(private_token, file.read_text(errors="ignore").lower(), file)
+            self.assertTrue((target / "pipeline/README.md").exists())
+            self.assertTrue((target / "pipeline/claude/skills/pipeline/SKILL.md").exists())
             self.assertIn("orchestrate-dashboard", (target / "orchestrate/README.md").read_text())
             self.assertIn("--link-bin", (target / "orchestrate/install.sh").read_text())
             self.assertIn("notify_cmd", (target / "orchestrate/contract/orchestrate.toml.example").read_text())

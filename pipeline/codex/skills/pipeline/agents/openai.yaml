@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pipeline"
+  short_description: "Adaptively spec, route, critique, and verify work"
+  default_prompt: "Use $pipeline with EXECUTION_PROFILE=AUTO to choose the cheapest safe model route, right-size the spec, critique full plans, and verify the result."
