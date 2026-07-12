@@ -37,7 +37,10 @@ For an in-session gate, call `PushNotification` once with an actionable sentence
      in the background:
      `nohup ~/.claude/skills/orchestrate/dashboard/orchestrate-dashboard >/tmp/orch-dashboard.log 2>&1 &`.
    Both tools resolve symlinks to their real location, so PATH symlinks are safe for either.
-   If the dashboard dir doesn't exist at all, say so once in the first status output instead of failing.
+   If the dashboard dir doesn't exist at all (e.g. skill-only plugin install), the loop works fine
+   without it — telemetry no-ops. On the FIRST run only, offer the optional layers with one
+   `AskUserQuestion` (live dashboard / + watchdog / no thanks) and point to the package's
+   `install.sh` or README "What do you actually need?". Respect a no: never re-ask in later runs.
 
 ## Steps 1–4 — plan and execute
 

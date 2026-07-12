@@ -24,7 +24,9 @@ One entrypoint skill to enforce a standard pipeline: continuity tracking, securi
 1. Establish a continuity track: `.claude/continuity/<project>--<topic>.md`
 2. Update track with: Goal, Constraints, State
 3. **Bootstrap the live dashboard** (same as `/orchestrate` precondition 6 — a pipeline that routes to
-   orchestration must surface on localhost:4600 too). If `~/.claude/skills/orchestrate/dashboard/` exists:
+   orchestration must surface on localhost:4600 too). If the dashboard dir is absent (skill-only
+   install), skip silently — telemetry no-ops; offer the optional layers once per the orchestrate
+   skill's precondition 6, never nag. If `~/.claude/skills/orchestrate/dashboard/` exists:
    symlink the emitter onto PATH if missing (`ln -sf …/dashboard/orchestrate-status ~/.local/bin/`),
    and if `curl -s -o /dev/null -w '%{http_code}' localhost:4600` isn't `200`, start the server
    (`nohup ~/.claude/skills/orchestrate/dashboard/orchestrate-dashboard >/tmp/orch-dashboard.log 2>&1 &`;

@@ -40,7 +40,10 @@ Quickest (skill only, via Claude Code's plugin system):
 /plugin install orchestrate@ai-coding-skills
 ```
 
-Full install from a clone (skill + dashboard + driver + Codex-side skill):
+Full install from a clone (skill + dashboard + driver + Codex-side skill). When run in a
+terminal it finishes by ASKING about each optional layer (PATH links, start the dashboard,
+launchd always-on) — every question defaults to No, so Enter-Enter-Enter gives you the plain
+skill:
 
 ```bash
 ./install.sh

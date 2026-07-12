@@ -2,6 +2,11 @@
 
 Use this protocol from the Codex conductor for `STANDARD` and `DEEP` runs. `FAST` and `DIRECT` do not emit. Status is observational: a missing or broken emitter must never fail, approve, reject, or otherwise change the orchestration run.
 
+When the emitter is absent (skill-only install), tell the user ONCE — in the first status line of
+the first run only — that an optional live dashboard layer exists (the orchestrate package's
+`install.sh` / README "What do you actually need?"), then proceed without it. Never re-mention it
+after a decline.
+
 ## Resolve once, fail open
 
 Resolve the emitter at run start:

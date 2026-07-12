@@ -57,13 +57,37 @@ else
   echo "  · codex skill skipped (no ~/.codex; set CODEX_SKILLS_DIR to force)"
 fi
 
-if [[ "$link_bin" == "1" ]]; then
+link_tools() {
   mkdir -p "$BIN_DEST"
   ln -sfn "$HERE/scripts/orchestrate.sh" "$BIN_DEST/orchestrate-driver"
   for tool in orchestrate-dashboard orchestrate-status orchestrate-watchdog; do
     ln -sfn "$DEST/dashboard/$tool" "$BIN_DEST/$tool"
   done
   echo "  ✓ PATH tools linked -> $BIN_DEST"
+}
+[[ "$link_bin" != "1" ]] || link_tools
+
+# --- Optional layers (interactive; every answer defaults to No) -------------
+# The skill alone is the product. These add live status on top — see README
+# "What do you actually need?". Skipped entirely when not run from a terminal.
+if [[ -t 0 && -t 1 ]]; then
+  echo
+  echo "== Optional layers (all default to No; Enter skips) =="
+  if [[ "$link_bin" != "1" ]]; then
+    read -r -p "  Link driver + dashboard tools into $BIN_DEST? [y/N] " ans
+    if [[ "$ans" == [yY]* ]]; then link_tools; fi
+  fi
+  read -r -p "  Start the localhost:4600 status dashboard now? [y/N] " ans
+  if [[ "$ans" == [yY]* ]]; then
+    mkdir -p "$HOME/.orchestrate/logs"
+    nohup "$DEST/dashboard/orchestrate-dashboard" >"$HOME/.orchestrate/logs/dashboard.log" 2>&1 &
+    sleep 1
+    curl -s -o /dev/null -w "  ✓ dashboard -> http://localhost:4600 (%{http_code})\n" localhost:4600 || true
+  fi
+  if [[ "$(uname)" == "Darwin" && -x "$DEST/dashboard/launchd/install-launchd.sh" ]]; then
+    read -r -p "  Install macOS launchd agents so dashboard+watchdog stay on across reboots? [y/N] " ans
+    if [[ "$ans" == [yY]* ]]; then bash "$DEST/dashboard/launchd/install-launchd.sh"; fi
+  fi
 fi
 
 cat <<EOF
@@ -82,8 +106,11 @@ $([[ "$link_bin" == "1" ]] || echo "  5. Optional PATH links: ./install.sh --lin
 Use it:
   In Claude Code:   /orchestrate <topic>
   Headless leg:     "$HERE/scripts/orchestrate.sh" <topic> PLAN.md
-  Dashboard:        "$DEST/dashboard/orchestrate-dashboard"
-  Watchdog:         "$DEST/dashboard/orchestrate-watchdog"
+
+Optional layers (any time later — see README "What do you actually need?"):
+  Dashboard:        "$DEST/dashboard/orchestrate-dashboard"     # localhost:4600
+  Watchdog:         "$DEST/dashboard/orchestrate-watchdog"      # flags dead/stalled runs
+  Always-on (mac):  bash "$DEST/dashboard/launchd/install-launchd.sh"
 EOF
 
 [[ "$missing" == "0" ]] || { echo; echo "NOTE: install the missing CLI(s) above before running the loop."; }
