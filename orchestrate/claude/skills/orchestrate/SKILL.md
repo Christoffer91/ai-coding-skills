@@ -72,17 +72,26 @@ codex exec resume <session-id> -c model_reasoning_effort=medium \  # medium is i
 
 ## Live status
 
-The driver emits automatically. For in-session runs:
+The driver emits automatically. For in-session runs (server + emitter bootstrap is precondition 6):
 
 ```bash
-ID="$(basename "$PWD")-<topic>"
+ID="$(basename "$PWD")-<topic>"   # FRESH id per topic/round — never reuse a prior round's id
 orchestrate-status start --id "$ID" --repo <repo> --topic <topic> --title "<title>" --branch orch/<topic>
-orchestrate-status step --id "$ID" --n <1-7> --state active|done
+orchestrate-status step --id "$ID" --n <1-7> --state active|done   # at each real transition
 orchestrate-status pr --id "$ID" --number <n> --url <url>
 orchestrate-status gate --id "$ID" --question "Deploy?" --option "Merge & deploy:primary" --option "Leave PR open"
 choice=$(orchestrate-status wait --id "$ID" --timeout 0)
-orchestrate-status done --id "$ID"
+orchestrate-status done --id "$ID"   # ALWAYS terminal: done, or `step --state fail` + `fail`
 ```
+
+Emit discipline is not optional telemetry hygiene — it is what the card renders:
+- **Fresh id per round.** A new topic or a new round on the same topic gets a new `start` with a new
+  id (suffix a round number if the topic repeats). Reusing an old id makes the card show the old
+  branch and step forever.
+- **Terminal emit, always.** Every round ends with `done` (or `fail`), including handoffs and
+  abandoned rounds — a finished run without a terminal emit keeps rendering as active.
+- The dashboard infers "stalled" from time-since-last-emit; a completed round MUST emit done/fail,
+  and a new round MUST start a new id, or the card will misreport.
 
 Also call `PushNotification` and `AskUserQuestion` for in-session gates; the localhost dashboard is optional desktop status, not the phone transport.
 

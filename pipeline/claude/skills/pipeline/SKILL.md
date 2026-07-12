@@ -31,6 +31,11 @@ One entrypoint skill to enforce a standard pipeline: continuity tracking, securi
    both tools resolve PATH symlinks safely). Then `orchestrate-status start --id <repo>-<topic> …` so the
    run appears immediately, and emit `step`/`pr`/`gate` as the pipeline progresses. Do this at pipeline
    start, not reactively when the user notices an empty page.
+   **Emit discipline:** use a FRESH id per topic/round — never reuse a prior round's id (suffix a round
+   number if the topic repeats); emit `step --n N --state active|done` at each real transition; and
+   ALWAYS end the round with a terminal `orchestrate-status done --id <id>` (or a fail state), including
+   handoffs. The dashboard infers "stalled" from time-since-last-emit; a completed round MUST emit
+   done/fail, and a new round MUST start a new id, or the card will misreport.
 
 ### 2. Coverage Matrix
 Determine which checks apply (REQUIRED / OPTIONAL / NOT_APPLICABLE):
