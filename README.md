@@ -20,7 +20,7 @@ Quickest — this repo is a Claude Code **plugin marketplace** (skill-only insta
 /plugin install pipeline@ai-coding-skills
 ```
 
-For orchestrate's full runtime (localhost dashboard, headless driver, Codex-side skill) clone and run the installer; each skill folder has its own `README.md`:
+For orchestrate's full runtime (localhost dashboard, headless driver, Codex-side skill) clone and run the installer — it asks about each optional layer, all defaulting to No; each skill folder has its own `README.md`:
 
 ```bash
 cd orchestrate && ./install.sh        # Claude skill + dashboard, and codex/ side if ~/.codex exists
