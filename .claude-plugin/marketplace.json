@@ -16,6 +16,12 @@
       "description": "Standard delivery pipeline for non-trivial work: coverage matrix (security/risk/review/tests/docs), adaptive routing, verification gates, and PR-ready output. Routes real implementation into the orchestrate loop.",
       "source": "./pipeline/claude",
       "category": "development"
+    },
+    {
+      "name": "debug",
+      "description": "Evidence-driven debugging: a cheap systematic single-pass loop that escalates hard bugs to a dual-brain council — Claude and Codex CLI research independently, hypotheses are falsified, and candidate fixes race in disposable worktrees. Token-conscious with a mandatory usage report.",
+      "source": "./debug/claude",
+      "category": "development"
     }
   ]
 }
