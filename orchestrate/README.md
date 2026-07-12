@@ -19,6 +19,15 @@ No API keys are needed when Codex uses ChatGPT OAuth and `gh` uses its keyring t
 
 ## Install
 
+Quickest (skill only, via Claude Code's plugin system):
+
+```
+/plugin marketplace add Christoffer91/ai-coding-skills
+/plugin install orchestrate@ai-coding-skills
+```
+
+Full install from a clone (skill + dashboard + driver + Codex-side skill):
+
 ```bash
 ./install.sh
 # Also link the driver/dashboard/status/watchdog into ~/.local/bin:

@@ -1,0 +1,9 @@
+{
+  "name": "orchestrate",
+  "description": "Dual-brain plan → execute → review → ship loop: Claude plans and reviews the PR, OpenAI Codex CLI critiques the plan, writes the code, opens the PR, and applies review edits. Deploy is risk-gated.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Christoffer91"
+  },
+  "homepage": "https://github.com/Christoffer91/ai-coding-skills/tree/main/orchestrate"
+}
