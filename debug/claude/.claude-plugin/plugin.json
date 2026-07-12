@@ -1,0 +1,9 @@
+{
+  "name": "debug",
+  "description": "Evidence-driven debugging: a cheap systematic single-pass loop that escalates hard bugs to a dual-brain council — Claude and Codex CLI research independently, hypotheses are falsified, and candidate fixes race in disposable worktrees. Token-conscious with a mandatory usage report.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Christoffer91"
+  },
+  "homepage": "https://github.com/Christoffer91/ai-coding-skills/tree/main/debug"
+}

@@ -1133,8 +1133,12 @@ class SyncScriptTests(unittest.TestCase):
             self.assertTrue((target / "orchestrate/codex/skills/orchestrate/SKILL.md").exists())
             pipeline_skill = (target / "pipeline/codex/skills/pipeline/SKILL.md").read_text()
             self.assertIn("name: pipeline", pipeline_skill)
+            self.assertTrue((target / "debug/README.md").exists())
+            self.assertTrue((target / "debug/claude/skills/debug/SKILL.md").exists())
+            self.assertTrue((target / "debug/claude/.claude-plugin/plugin.json").exists())
+            self.assertTrue((target / "debug/codex/skills/systematic-debugging/SKILL.md").exists())
             private_token = "chan" + "sen"  # split so this file survives its own sync scan
-            for synced in (target / "orchestrate", target / "pipeline"):
+            for synced in (target / "orchestrate", target / "pipeline", target / "debug"):
                 for file in synced.rglob("*"):
                     if file.is_file():
                         self.assertNotIn(private_token, file.read_text(errors="ignore").lower(), file)
