@@ -9,6 +9,12 @@ deploy_authorized = false
 # directly, never through a shell. Quoted strings use shlex splitting, so pipes,
 # redirects, globs, and environment assignments are not shell syntax here.
 # Uncomment only commands that exist in this trusted local checkout.
+#
+# COST TIP (private repos): these run LOCALLY before push. Filling them in is the
+# main lever for keeping GitHub Actions minutes low — the loop catches failures
+# here instead of pushing broken commits that trigger your remote CI. Pair with a
+# `concurrency: cancel-in-progress` block in the target repo's workflows so the
+# fix loop's later pushes cancel superseded runs. See references/auto-deploy-safety.md.
 # test_cmd  = ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]
 # build_cmd = ["npm", "run", "build"]
 # eval_cmd  = ["python3", "scripts/eval.py"]

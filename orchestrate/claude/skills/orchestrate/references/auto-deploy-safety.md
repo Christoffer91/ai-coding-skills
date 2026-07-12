@@ -57,3 +57,24 @@ auto_merge   = false                # merge the PR before deploy (default false:
 ## Merge policy
 - Low-risk + green + `auto_merge=true` → `gh pr merge <n> --squash --delete-branch`, then deploy.
 - Otherwise leave the PR open for the user to merge; report it's ready.
+
+## Keeping GitHub Actions cost down on private repos
+The skill adds no workflows, but branch-per-task + PR-always means each `orch/<topic>`
+push triggers the target repo's existing CI, and the review↔fix loop pushes up to
+`max_iter` more times — so one run can trigger CI several times. On private repos those
+minutes bill against the free tier (macOS runners at 10×). Levers, most effective first:
+
+1. **Fill in `test_cmd`/`build_cmd`/`eval_cmd`.** They run locally in the worktree before
+   push, so failures are caught off-Actions and the fix loop converges in fewer pushes.
+2. **Add a `concurrency` block to the target repo's workflows** so each fix push cancels the
+   superseded run — you pay for the latest push only:
+   ```yaml
+   concurrency:
+     group: ci-${{ github.ref }}
+     cancel-in-progress: true
+   ```
+   This is the correct fix for the multiplication; switching triggers to `pull_request`
+   does NOT help (it re-fires on every `synchronize`, i.e. every push to the PR branch).
+3. **Keep `deploy_authorized = false`** (the default). The loop then stops at the review
+   handoff instead of polling `gh pr checks` and chasing CI-green in a tight loop.
+4. For a big diff you can lower `max_iter` to cap how many fix pushes are possible.
