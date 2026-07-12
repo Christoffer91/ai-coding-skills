@@ -17,7 +17,8 @@ PAT="$DEFAULT${PII_EXTRA:+|$PII_EXTRA}"
 # Exclude the repo plumbing and this script itself (it contains the patterns).
 hits="$(grep -rInE "$PAT" . \
           --exclude-dir=.git \
-          --exclude=scan-pii.sh 2>/dev/null || true)"
+          --exclude=scan-pii.sh \
+          --exclude=LICENSE 2>/dev/null || true)"
 
 if [[ -n "$hits" ]]; then
   echo "⚠️  Possible personal info found — review before publishing:"
