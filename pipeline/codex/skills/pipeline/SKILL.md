@@ -173,6 +173,22 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
    - Do not introduce external planning trees or third-party state machines by default.
 6. Never edit other track files. If you need to switch tracks, STOPP and ask the user to confirm the new track path.
 7. If the chat context feels degraded (looping, conflicting constraints, lost details), run `context-health-check` and/or `context-compress` and then continue from the stabilized facts.
+8. **DASHBOARD STATUS (emit at pipeline start, not only when routing to `orchestrate`).** Any
+   non-trivial run — every `EXECUTE`, and any `PLAN_ONLY` above `FAST` — must surface on the local
+   dashboard so it isn't invisible while it works. This is observational and fail-open: never let it
+   block, approve, or change the run. Do it here at intake, not reactively.
+   - **Resolve the emitter (absolute path, no symlink needed):** if `orchestrate-status` isn't on PATH,
+     use `$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status` when executable; else record
+     `shared status: NOT_AVAILABLE` and skip silently. (No `~/.local/bin` symlink — that would trip the
+     SAFETY GATE; the absolute path is enough for Codex.)
+   - **Server:** if `$HOME/.claude/skills/orchestrate/dashboard/` exists and
+     `curl -s -o /dev/null -w '%{http_code}' localhost:4600` isn't `200`, start it in the background
+     from its real path: `nohup "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-dashboard" >/tmp/orch-dashboard.log 2>&1 &`.
+   - **Emit** per `orchestrate/references/shared-run-status.md`: a `start` with a FRESH unique id
+     (`<repo>-<topic>-<branch>-<UTC>-<pid>` — never reuse a prior goal's id), then `step`/`pr`/`gate`
+     at real transitions, and ALWAYS a terminal `done` (or `fail`) when the goal finishes or hands off.
+     Wrap every call so a non-zero exit is non-fatal. Do this for the pipeline run itself even when the
+     work never routes into `orchestrate` — that routing case only ADDS the orchestrate leg's emissions.
 
 ### C) DESIGN/SPEC (mandatory output)
 1. For `FAST`, produce only the `MICRO_SPEC` fields from the adaptive contract. For `STANDARD` or `DEEP`, ask the Sol Ultra planner for the `FULL_SPEC` in `references/spec-driven-plan.md`, then complete the critique gate before approval.

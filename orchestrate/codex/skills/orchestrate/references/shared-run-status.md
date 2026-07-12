@@ -1,6 +1,10 @@
 # Shared Run Status for Codex-Primary Runs
 
-Use this protocol from the Codex conductor for `STANDARD` and `DEEP` runs. `FAST` and `DIRECT` do not emit. Status is observational: a missing or broken emitter must never fail, approve, reject, or otherwise change the orchestration run.
+Use this protocol from the Codex conductor and from `pipeline` intake (step B.8). Emit for any
+non-trivial run: every `EXECUTE`, and any `PLAN_ONLY` above `FAST`. `DIRECT` and a bare `FAST` plan need
+not emit, but a `FAST` `EXECUTE` that mutates files still should, so the goal is visible while it runs.
+Status is observational: a missing or broken emitter must never fail, approve, reject, or otherwise change
+the run. Emit at run start, not only when a pipeline routes into `orchestrate`.
 
 When the emitter is absent (skill-only install), tell the user ONCE — in the first status line of
 the first run only — that an optional live dashboard layer exists (the orchestrate package's

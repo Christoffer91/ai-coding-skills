@@ -1109,6 +1109,11 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn("shared status emission", pipeline)
         self.assertIn("STANDARD", pipeline)
         self.assertIn("DEEP", pipeline)
+        # pipeline must emit on its own at intake, not only when it routes to orchestrate,
+        # or FAST/pipeline-only goals stay invisible on the dashboard.
+        self.assertIn("DASHBOARD STATUS", pipeline)
+        self.assertIn("orchestrate-status", pipeline)
+        self.assertIn("never routes into `orchestrate`", pipeline)
         self.assertIn("HANDOFF-CLAUDE-review-<topic>.md", handover)
         self.assertIn("exact implementation session ID", handover)
 
