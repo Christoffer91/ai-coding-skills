@@ -249,6 +249,20 @@ class DashboardTests(unittest.TestCase):
         path.write_text(json.dumps(data))
         return path
 
+    def test_tools_resolve_symlinked_install_to_real_files(self):
+        # install.sh --link-bin and the skill bootstrap put symlinks in ~/.local/bin;
+        # both tools must locate dashboard.html/overrides.py next to the REAL script.
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = Path(td)
+            dash_link = bin_dir / "orchestrate-dashboard"
+            os.symlink(DASHBOARD, dash_link)
+            dash_mod = load_script("orchestrate_dashboard_symlink_test", dash_link)
+            self.assertTrue(Path(dash_mod.HTML).is_file(), dash_mod.HTML)
+            status_link = bin_dir / "orchestrate-status"
+            os.symlink(STATUS, status_link)
+            status_mod = load_script("orchestrate_status_symlink_test", status_link)
+            self.assertTrue((Path(status_mod.HERE) / "overrides.py").is_file(), status_mod.HERE)
+
     def test_handoff_and_failed_have_non_stalled_health(self):
         old = int(time.time()) - 9999
         self.write_run("h", status="handoff", updatedAt=old)

@@ -15,7 +15,9 @@ HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
 RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
-HERE = os.path.dirname(os.path.abspath(__file__))
+# realpath, not abspath: the server must find dashboard.html (and overrides.py)
+# next to the REAL script even when launched via a ~/.local/bin symlink.
+HERE = os.path.dirname(os.path.realpath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import overrides
