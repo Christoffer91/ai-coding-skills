@@ -22,7 +22,7 @@
   .icon{width:1.2em;display:inline-block}
   .title{font-weight:700;flex:1 1 auto;min-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .st{white-space:nowrap}
-  .st.live{color:var(--green)} .st.stale{color:var(--amber)} .st.dead{color:var(--red)}
+  .st.live{color:var(--green)} .st.stale{color:var(--amber)} .st.dead{color:var(--red)} .st.quiet{color:var(--dim)}
   .st.needs{color:var(--amber);font-weight:700} .st.handoff{color:var(--clay)}
   .st.done{color:var(--grey)} .st.failed{color:var(--red)}
   .meta{color:var(--dim);white-space:nowrap}
@@ -64,7 +64,7 @@ function stateOf(r){
   if(r.gate&&!r.answered)return["needs","NEEDS YOU","◆"];
   if(st==="handoff"||r.health==="handoff")return["handoff","with Claude","⇄"];
   if(r.health==="exited")return["dead","not running","■"];
-  if(r.health)return r.health==="stale"?["stale","stalled","⚠"]:["live","live","●"]; // server truth wins
+  if(r.health)return r.health==="stale"?["stale","stalled","⚠"]:r.health==="quiet"?["quiet","no recent update","◦"]:["live","live","●"]; // server truth wins
   const a=r.staleSecs!=null?r.staleSecs:now()-(r.updatedAt||now());
   if(a>STALE)return["stale","stalled","⚠"];
   return["live","live","●"];

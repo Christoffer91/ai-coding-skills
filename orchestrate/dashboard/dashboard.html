@@ -76,6 +76,7 @@
   .schip.needs{background:var(--await-soft);border-color:color-mix(in srgb,var(--await) 35%,transparent);color:var(--await)}
   .schip.dead{background:var(--fail-soft);border-color:color-mix(in srgb,var(--fail) 30%,transparent);color:var(--fail)}
   .schip.stale{color:var(--await)}
+  .schip.quiet{color:var(--faint)}
   .schip.liv{color:var(--live)}
   .schip.liv .d{width:7px;height:7px;border-radius:50%;background:var(--live);animation:pulse 2.2s infinite}
   .schip.claude{color:var(--claude)}
@@ -97,6 +98,7 @@
   .pill.live{background:var(--live-soft);color:var(--live)}
   .pill.live .d{width:7px;height:7px;border-radius:50%;background:var(--live);display:inline-block;margin-right:6px;animation:pulse 2s infinite;vertical-align:middle}
   .pill.stale{background:var(--await-soft);color:var(--await)}
+  .pill.quiet{background:var(--surface-2);color:var(--faint)}
   .pill.dead{background:var(--fail-soft);color:var(--fail)}
   .pill.needs{background:var(--await-soft);color:var(--await)}
   .pill.done{background:var(--done-soft);color:var(--done)}
@@ -399,7 +401,7 @@ function stateOf(r){ // one visual state per card: done|failed|rejected|needs|ha
   if(isGateOpen(r))return"needs";
   if(r.status==="handoff"||healthOf(r)==="handoff")return"handoff";
   const h=healthOf(r);
-  return h==="exited"?"dead":h==="stale"?"stale":"live";
+  return h==="exited"?"dead":h==="stale"?"stale":h==="quiet"?"quiet":"live";
 }
 
 function recoveryAction(r,st){
@@ -487,6 +489,7 @@ function card(r,compact){
     rejected:'<span class="pill rejected">rejected</span>',
     needs:'<span class="pill needs">needs you</span>',handoff:'<span class="pill handoff">with Claude · review</span>',
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled · ${aStr}</span>`,
+    quiet:`<span class="pill quiet">◦ no recent update · ${aStr}</span>`,
     live:'<span class="pill live"><span class="d"></span>running</span>'};
   const m=r.metrics||{};
   let activity="";
@@ -535,9 +538,10 @@ function trow(r){
   const aStr=age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
   const pills={needs:'<span class="pill needs">needs you</span>',handoff:'<span class="pill handoff">with claude</span>',
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled ${aStr}</span>`,
+    quiet:`<span class="pill quiet">◦ no recent update ${aStr}</span>`,
     live:'<span class="pill live"><span class="d"></span>running</span>',failed:'<span class="pill failed">failed</span>',
     done:'<span class="pill done">merged ✓</span>',rejected:'<span class="pill rejected">rejected</span>'};
-  const edge={needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)",failed:"var(--fail)",done:"var(--done)",rejected:"var(--muted)"}[st];
+  const edge={needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",live:"var(--live)",failed:"var(--fail)",done:"var(--done)",rejected:"var(--muted)"}[st];
   const actTxt=cur?`${cur.name}${cur.note?" — "+cur.note:""}`:"";
   let acts="";
   if(["stale","dead","failed"].includes(st))acts=recoveryAction(r,st);
@@ -575,6 +579,7 @@ function render(){
   if(cnt("needs"))chips.push(`<span class="schip needs"><span class="n">${cnt("needs")}</span> need you</span>`);
   if(cnt("dead")+cnt("failed"))chips.push(`<span class="schip dead"><span class="n">${cnt("dead")+cnt("failed")}</span> not running</span>`);
   if(cnt("stale"))chips.push(`<span class="schip stale"><span class="n">${cnt("stale")}</span> stalled</span>`);
+  if(cnt("quiet"))chips.push(`<span class="schip quiet"><span class="n">${cnt("quiet")}</span> quiet</span>`);
   if(cnt("live"))chips.push(`<span class="schip liv"><span class="d"></span><span class="n">${cnt("live")}</span> live</span>`);
   {const wk=Date.now()/1000-7*86400;const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(Number((r.metrics||{})["tokens.total"])||0):0),0);
   if(tok7d>0)chips.push(`<span class="schip" style="color:var(--faint)">≈${esc(fmtTokens(tok7d))} tokens · 7d</span>`);}

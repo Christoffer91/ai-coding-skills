@@ -12,7 +12,10 @@ Usage:  orchestrate-watchdog [--poll 30] [--grace 180] [--once]
 Env:    ORCH_STALE_SECS (default 75), ORCH_WATCH_POLL, ORCH_WATCH_GRACE
 No dependencies (Python 3 stdlib). Safe to run alongside the dashboard.
 """
-import os, glob, json, time, signal, subprocess, argparse
+import os, glob, json, time, signal, subprocess, argparse, sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # resolve ~/.local/bin symlink
+import thresholds
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
@@ -123,7 +126,11 @@ def sweep(grace, handled):
         alive = pid_alive(r.get("pid"))
         dead = alive is False
         stalled = age > grace
-        if not (dead or stalled):
+        # A no-pid model-driven run (Codex goal / in-session) that emits only at transitions has no
+        # worker to reap and no evidence of a hang — its silence is "quiet", not "needsRestart".
+        # Only act when there is a real worker: a live/dead pid or a recorded reapable worker.
+        has_worker = bool(r.get("pid")) or bool((r.get("worker") or {}).get("pid"))
+        if not (dead or (stalled and has_worker)):
             continue
         if handled.get(r["id"]) == r.get("updatedAt"):
             continue  # already escalated this exact state
@@ -139,8 +146,7 @@ def sweep(grace, handled):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--poll", type=int, default=int(os.environ.get("ORCH_WATCH_POLL", "30")))
-    ap.add_argument("--grace", type=int, default=int(os.environ.get("ORCH_WATCH_GRACE",
-                    str(int(os.environ.get("ORCH_STALL_KILL", "300")) + 120))))
+    ap.add_argument("--grace", type=int, default=thresholds.WATCHDOG_GRACE_SECS)
     ap.add_argument("--once", action="store_true", help="one sweep then exit (for cron/testing)")
     a = ap.parse_args()
     os.makedirs(RUNS, exist_ok=True)

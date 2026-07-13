@@ -273,25 +273,43 @@ class DashboardTests(unittest.TestCase):
         src = DASHBOARD.read_text()
         self.assertNotIn("orch-clog-", src)  # the global TMPDIR fallback must stay dead
 
-    def test_session_runs_get_lenient_stall_threshold(self):
-        # No worker pid = in-session run: quiet planning for minutes is normal, not "stalled".
+    def test_no_pid_silence_is_quiet_not_stalled(self):
+        # A model-driven run (no worker pid) silent past the session window is "quiet" (telemetry
+        # unknown), never "stalled" — silence isn't evidence of a hang for transition-only emitters.
         quiet = int(time.time()) - 300   # 5 min silent
-        long_quiet = int(time.time()) - 1200  # 20 min silent
+        long_quiet = int(time.time()) - 1200  # 20 min silent, past SESSION_QUIET_SECS (900)
         self.write_run("session-quiet", status="running", updatedAt=quiet, pid=None)
         self.write_run("session-long", status="running", updatedAt=long_quiet, pid=None)
         health = {r["id"]: r["health"] for r in self.dashboard.load_runs()}
         self.assertEqual(health["session-quiet"], "live")
-        self.assertEqual(health["session-long"], "stale")
+        self.assertEqual(health["session-long"], "quiet")
+        # A pid-bearing streaming driver silent 5 min IS a real stall.
         with mock.patch.object(self.dashboard, "pid_alive", return_value=True):
             self.write_run("driver-quiet", status="running", updatedAt=quiet, pid=4242)
             health = {r["id"]: r["health"] for r in self.dashboard.load_runs()}
-        self.assertEqual(health["driver-quiet"], "stale")  # driver streams; 5 min silent IS stalled
+        self.assertEqual(health["driver-quiet"], "stale")
+
+    def test_quiet_run_is_not_offered_a_restart(self):
+        long_quiet = int(time.time()) - 1200
+        self.write_run("q", status="running", updatedAt=long_quiet, pid=None)
+        run = next(r for r in self.dashboard.load_runs() if r["id"] == "q")
+        self.assertEqual(run["health"], "quiet")
+        self.assertFalse(run["restartable"])
+
+    def test_thresholds_are_a_single_shared_source(self):
+        self.assertEqual(self.dashboard.STALE_SECS, self.dashboard.thresholds.DRIVER_STALE_SECS)
+        self.assertEqual(self.dashboard.SESSION_STALE_SECS, self.dashboard.thresholds.SESSION_QUIET_SECS)
+        watchdog = load_script("orchestrate_watchdog_threshold_test", WATCHDOG)
+        self.assertIs(watchdog.thresholds.WATCHDOG_GRACE_SECS.__class__, int)
+        # Watchdog reap grace must be >= the display stall window so display flags first, reap second.
+        self.assertGreaterEqual(watchdog.thresholds.WATCHDOG_GRACE_SECS,
+                                self.dashboard.thresholds.DRIVER_STALE_SECS)
 
     def test_all_steps_done_renders_done_not_stalled(self):
         old = int(time.time()) - 9999
         steps = [{"n": i + 1, "state": "done"} for i in range(7)]
         self.write_run("finished", status="running", updatedAt=old, steps=steps)
-        self.write_run("midstep", status="running", updatedAt=old,
+        self.write_run("midstep", status="running", updatedAt=old, pid=999999,
                        steps=[{"n": 1, "state": "done"}, {"n": 2, "state": "active"}])
         health = {r["id"]: r["health"] for r in self.dashboard.load_runs()}
         self.assertEqual(health["finished"], "done")
@@ -468,6 +486,27 @@ class WatchdogTests(unittest.TestCase):
              mock.patch.object(self.watchdog.os, "kill") as kill:
             self.assertEqual(self.watchdog.reap_recorded_worker(run_data), [])
         kill.assert_not_called()
+
+    def test_sweep_ignores_silent_no_worker_runs_but_flags_worker_backed(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            runs = home / ".orchestrate" / "runs"
+            runs.mkdir(parents=True)
+            (home / ".orchestrate" / "answers").mkdir()
+            old = int(time.time()) - 100000  # far past any grace
+            # No pid, no recorded worker: a Codex goal / in-session run. Nothing to reap → leave alone.
+            (runs / "goal.json").write_text(json.dumps(
+                {"id": "goal", "status": "running", "updatedAt": old, "pid": None}))
+            # Worker-backed run whose pid is dead: genuinely needs flagging.
+            (runs / "worker.json").write_text(json.dumps(
+                {"id": "worker", "status": "running", "updatedAt": old, "pid": 999999,
+                 "worker": {"pid": 999999, "startedAt": "t", "cwd": str(home), "pgid": 999999}}))
+            with mock.patch.object(self.watchdog, "RUNS", str(runs)), \
+                 mock.patch.object(self.watchdog, "ANS", str(home / ".orchestrate" / "answers")), \
+                 mock.patch.object(self.watchdog, "reap_recorded_worker", return_value=[]):
+                self.watchdog.sweep(grace=180, handled={})
+            self.assertNotIn("needsRestart", json.loads((runs / "goal.json").read_text()))
+            self.assertTrue(json.loads((runs / "worker.json").read_text())["needsRestart"])
 
 
 class VerifyHelperTests(unittest.TestCase):

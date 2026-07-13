@@ -21,11 +21,10 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import overrides
+import thresholds
 HTML = os.path.join(HERE, "dashboard.html")
-STALE_SECS = int(os.environ.get("ORCH_STALE_SECS", "75"))  # driver runs stream notes every ~10s
-# In-session runs (no worker pid) legitimately go quiet for a long planning/review step —
-# don't cry "stalled" until this much silence.
-SESSION_STALE_SECS = int(os.environ.get("ORCH_SESSION_STALE_SECS", "900"))
+STALE_SECS = thresholds.DRIVER_STALE_SECS          # streaming driver silent this long => "stalled"
+SESSION_STALE_SECS = thresholds.SESSION_QUIET_SECS  # model run silent this long => neutral "quiet"
 RETENTION_SECS = 7 * 24 * 60 * 60
 
 
@@ -80,8 +79,12 @@ def load_runs():
             r["health"] = "waiting"       # blocked on you, not a liveness concern
         elif alive is False:
             r["health"] = "exited"        # the worker process is gone
-        elif age > (STALE_SECS if r.get("pid") else SESSION_STALE_SECS):
-            r["health"] = "stale"         # no update in a while — long step or a hang
+        elif r.get("pid") and age > STALE_SECS:
+            r["health"] = "stale"         # a streaming driver went silent — evidence of a real hang
+        elif not r.get("pid") and age > SESSION_STALE_SECS:
+            # Model-driven run (Codex goal / in-session) that emits only at transitions. Silence is
+            # missing telemetry, not proof of a hang — say so honestly instead of crying "stalled".
+            r["health"] = "quiet"
         else:
             r["health"] = "live"          # updated recently / worker alive
         if r["health"] in ("stale", "exited", "failed"):
