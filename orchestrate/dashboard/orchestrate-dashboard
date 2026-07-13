@@ -15,12 +15,14 @@ HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
 RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
+LIVENESS = os.path.join(BASE, "liveness")
 # realpath, not abspath: the server must find dashboard.html (and overrides.py)
 # next to the REAL script even when launched via a ~/.local/bin symlink.
 HERE = os.path.dirname(os.path.realpath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import overrides
+import liveness
 import thresholds
 HTML = os.path.join(HERE, "dashboard.html")
 STALE_SECS = thresholds.DRIVER_STALE_SECS          # streaming driver silent this long => "stalled"
@@ -45,7 +47,7 @@ def pid_alive(pid):
 
 def load_runs():
     out = []
-    now = int(time.time())
+    now = time.time()
     for f in sorted(glob.glob(os.path.join(RUNS, "*.json"))):
         try:
             with open(f) as fh:
@@ -59,14 +61,29 @@ def load_runs():
                     r["answered"] = json.load(fh)
             except Exception:
                 pass
-        # --- liveness: is this run actually still running? ---
-        age = now - int(r.get("updatedAt", now))
-        r["staleSecs"] = age
+        # --- liveness: authoritative run state first; a matching sidecar lease is
+        # read-only evidence for no-pid Codex activity and never changes updatedAt. ---
+        try:
+            updated_at = float(r.get("updatedAt", now))
+        except (TypeError, ValueError):
+            updated_at = now
+        lease_at = liveness.matching_lease_activity(r, LIVENESS, now, SESSION_STALE_SECS)
+        activity_at = max(updated_at, lease_at) if lease_at is not None else updated_at
+        age = max(0, now - activity_at)
+        r["staleSecs"] = int(age)
+        if lease_at is not None:
+            r["sidecarLiveAt"] = lease_at
         alive = pid_alive(r.get("pid"))
         r["pidAlive"] = alive
         status = r.get("status")
         if status == "handoff":
             r["health"] = "handoff"
+        elif status == "await":
+            # A run waits on an explicit gate, even when a just-written answer
+            # has not yet been consumed by the owner process.
+            r["health"] = "waiting"
+        elif status == "paused":
+            r["health"] = "paused"
         elif status in ("failed", "fail"):
             r["health"] = "failed"
         elif status == "rejected":
@@ -243,6 +260,7 @@ def cleanup_retained_runs(now=None):
             continue
         try: os.remove(filename)
         except OSError: pass
+        liveness.remove_run_leases(LIVENESS, str(run.get("id") or ""))
         answer = os.path.join(ANS, os.path.basename(filename))
         try: os.remove(answer)
         except OSError: pass

@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Tail one bound Codex rollout and publish an isolated liveness lease.
+
+This is intentionally telemetry-only: it never invokes ``orchestrate-status``
+and never changes steps, status, or ``updatedAt``.  A sidecar is useful only
+when a host can bind an exact rollout file and initial Codex turn to a run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import signal
+import stat
+import sys
+import threading
+import time
+from pathlib import Path
+
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import liveness
+
+
+MAX_LINE_BYTES = 64 * 1024
+MAX_BYTES_PER_POLL = 512 * 1024
+MAX_IO_FAILURES = 3
+# Codex has used both the older response/event names and the current task
+# lifecycle names.  We read only the event kind; no transcript or tool payload
+# is inspected.  Every recognized event in the bound rollout is session
+# activity, including events without a turn identifier.
+ACTIVITY_KINDS = frozenset((
+    "response_item", "event_msg", "turn_context", "task_started",
+    "task_complete", "agent_message", "message", "reasoning",
+))
+
+
+def positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not 0 < seconds <= 86400:
+        raise argparse.ArgumentTypeError("must be greater than 0 and at most 86400")
+    return seconds
+
+
+def run_id_arg(value: str) -> str:
+    if not liveness.safe_run_id(value):
+        raise argparse.ArgumentTypeError("must be a filesystem-safe run id")
+    return value
+
+
+def turn_arg(value: str) -> str:
+    if not value or len(value) > 512 or not value.isprintable():
+        raise argparse.ArgumentTypeError("must be a non-empty printable turn id of at most 512 characters")
+    return value
+
+
+def session_arg(value: str) -> Path:
+    raw = Path(os.path.expanduser(value))
+    if not raw.is_absolute() or raw.is_symlink():
+        raise argparse.ArgumentTypeError("must be an absolute rollout file")
+    try:
+        sessions_root = Path(os.path.expanduser("~/.codex/sessions")).resolve()
+        resolved = raw.resolve()
+        resolved.relative_to(sessions_root)
+        if resolved.exists() and not stat.S_ISREG(resolved.stat().st_mode):
+            raise ValueError
+    except (OSError, RuntimeError, ValueError):
+        raise argparse.ArgumentTypeError("must be a rollout file beneath ~/.codex/sessions")
+    return resolved
+
+
+def read_run(runs_dir: Path, run_id: str) -> dict | None:
+    try:
+        with (runs_dir / f"{run_id}.json").open(encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def active_bound_run(
+    runs_dir: Path,
+    run_id: str,
+    generation: str,
+    session: str,
+    turn: str,
+) -> bool:
+    record = read_run(runs_dir, run_id)
+    return bool(
+        record
+        and record.get("id") == run_id
+        and liveness.accepts_liveness(record)
+        and liveness.binding_matches(record, generation, session, turn)
+    )
+
+
+def file_identity(path: Path) -> tuple[int, int, int]:
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError("rollout is no longer a regular file")
+    return info.st_dev, info.st_ino, info.st_size
+
+
+def parse_activity(raw: bytes) -> bool:
+    """Return whether one bounded line is activity in the bound session."""
+    try:
+        event = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(event, dict) and event.get("type") in ACTIVITY_KINDS
+
+
+def drain_new_lines(handle, discarding: bool) -> tuple[bool, bool]:
+    """Process at most a bounded byte budget and retain only parser state."""
+    bytes_read = 0
+    activity = False
+    while bytes_read < MAX_BYTES_PER_POLL:
+        line_start = handle.tell()
+        chunk = handle.readline(MAX_LINE_BYTES + 1)
+        if not chunk:
+            break
+        bytes_read += len(chunk)
+        if discarding:
+            if chunk.endswith(b"\n"):
+                discarding = False
+            continue
+        if not chunk.endswith(b"\n"):
+            if len(chunk) > MAX_LINE_BYTES:
+                discarding = True
+                continue
+            # A normal partial line may become valid on a later poll.
+            handle.seek(line_start)
+            break
+        if len(chunk) > MAX_LINE_BYTES:
+            continue
+        activity = parse_activity(chunk) or activity
+    return activity, discarding
+
+
+def acquire_lock(directory: Path, run_id: str, generation: str):
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = directory / f"{run_id}.{generation}.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        return None
+    return descriptor, lock_path
+
+
+def sidecar(args: argparse.Namespace) -> int:
+    home = Path(os.path.expanduser("~"))
+    runs_dir = home / ".orchestrate" / "runs"
+    lease_dir = Path(liveness.liveness_dir(str(home)))
+    session_ref = liveness.opaque_session_ref(str(args.session))
+    turn_ref = liveness.opaque_turn_ref(args.turn)
+    initial = read_run(runs_dir, args.id)
+    if not initial or not liveness.accepts_liveness(initial):
+        return 0
+    generation = initial.get("livenessGeneration")
+    if not isinstance(generation, str) or not liveness.binding_matches(initial, generation, session_ref, turn_ref):
+        return 0
+    acquired = acquire_lock(lease_dir, args.id, generation)
+    if acquired is None:
+        return 3
+    lock, lock_path = acquired
+    lease = None
+    handle = None
+    stopped = threading.Event()
+
+    def stop(*_unused) -> None:
+        stopped.set()
+
+    previous_term = signal.signal(signal.SIGTERM, stop)
+    previous_int = signal.signal(signal.SIGINT, stop)
+    try:
+        device = inode = None
+        start_offset = 0
+        last_activity = time.monotonic()
+        discarding = False
+        io_failures = 0
+        while not stopped.is_set():
+            if not active_bound_run(runs_dir, args.id, generation, session_ref, turn_ref):
+                break
+            if handle is None:
+                try:
+                    current_device, current_inode, current_size = file_identity(args.session)
+                except FileNotFoundError:
+                    if time.monotonic() - last_activity >= args.idle_exit:
+                        break
+                    stopped.wait(args.poll)
+                    continue
+                except OSError:
+                    io_failures += 1
+                    if io_failures >= MAX_IO_FAILURES:
+                        break
+                    stopped.wait(args.poll)
+                    continue
+                io_failures = 0
+                device, inode, start_offset = current_device, current_inode, current_size
+                try:
+                    handle = args.session.open("rb")
+                    handle.seek(start_offset)
+                except OSError:
+                    handle = None
+                    stopped.wait(args.poll)
+                    continue
+            try:
+                current_device, current_inode, current_size = file_identity(args.session)
+            except FileNotFoundError:
+                break
+            except OSError:
+                io_failures += 1
+                if io_failures >= MAX_IO_FAILURES:
+                    break
+                stopped.wait(args.poll)
+                continue
+            io_failures = 0
+            # Rotation, replacement, or truncation can no longer be correlated to
+            # the captured start offset.  Exit fail-open instead of following a
+            # possibly unrelated session.
+            if ((current_device, current_inode) != (device, inode)
+                    or current_size < handle.tell()):
+                break
+            activity, discarding = drain_new_lines(handle, discarding)
+            if activity and active_bound_run(runs_dir, args.id, generation, session_ref, turn_ref):
+                last_activity = time.monotonic()
+                try:
+                    lease = liveness.write_lease(
+                        lease_dir, args.id, generation, session_ref, turn_ref, start_offset
+                    )
+                except OSError:
+                    pass
+            # Any recognized activity in the already-bound rollout extends the
+            # session lease, including new turns and turnless response items.
+            if time.monotonic() - last_activity >= args.idle_exit:
+                break
+            stopped.wait(args.poll)
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        if lease is not None:
+            try:
+                lease.unlink()
+            except OSError:
+                pass
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+        try:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        finally:
+            os.close(lock)
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--id", required=True, type=run_id_arg)
+    parser.add_argument("--session", required=True, type=session_arg)
+    parser.add_argument("--turn", required=True, type=turn_arg)
+    parser.add_argument("--idle-exit", type=positive_seconds, default=900.0)
+    parser.add_argument("--poll", type=positive_seconds, default=5.0)
+    return sidecar(parser.parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

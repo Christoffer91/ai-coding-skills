@@ -47,7 +47,7 @@ skill:
 
 ```bash
 ./install.sh
-# Also link the driver/dashboard/status/watchdog into ~/.local/bin:
+# Also link the driver/dashboard/status/watchdog/Codex-sidecar into ~/.local/bin:
 ./install.sh --link-bin
 ```
 
@@ -64,7 +64,7 @@ The installer backs up an existing skill, installs the Claude skill plus dashboa
 - Resume an approval timeout from its recorded worktree: `scripts/orchestrate.sh --resume --timeout 0 <topic> PLAN.md`.
 - Preview without writes: `ORCH_DRYRUN=1 scripts/orchestrate.sh <topic> PLAN.md`.
 
-Start `dashboard/orchestrate-dashboard` for local status and `dashboard/orchestrate-watchdog` for stale-worker recovery. The dashboard binds to `127.0.0.1` and reads run state from `~/.orchestrate/runs`.
+Start `dashboard/orchestrate-dashboard` for local status and `dashboard/orchestrate-watchdog` for stale-worker recovery. The dashboard binds to `127.0.0.1` and reads run state from `~/.orchestrate/runs`. `dashboard/orchestrate-codex-sidecar` is an optional, generation- and session-bound liveness adapter for a host that can supply an exact Codex rollout path and initial turn id; it writes a separate lease and never changes run status or completion.
 
 For phone-capable driver notifications, set `ORCH_NOTIFY_CMD=/absolute/path/to/hook` or repo-local `.ai/orchestrate.toml` `notify_cmd` to a quoted path/argv array. The hook receives the message as one argument and is executed directly, never through a shell. macOS Notification Center is only a desktop fallback; Remote Control gates use `PushNotification` plus `AskUserQuestion` in-session.
 
@@ -92,6 +92,8 @@ scripts/orchestrate.sh                   headless Codex-leg driver
 scripts/orchestrate_verify.py            safe TOML/argv verifier and test-delta classifier
 dashboard/orchestrate-dashboard          localhost status server/UI
 dashboard/orchestrate-status             state emitter, gates, notifier hook
+dashboard/orchestrate-codex-sidecar      optional isolated Codex liveness lease writer
+dashboard/liveness.py                    opaque binding and lease helpers
 dashboard/orchestrate-watchdog           stale-worker detection/recovery
 tests/test_orchestrate_hardening.py       driver/dashboard/watchdog/package tests
 contract/                                global snippets and repo config example

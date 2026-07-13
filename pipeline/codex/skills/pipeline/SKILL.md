@@ -181,6 +181,18 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
      use `$HOME/.claude/skills/orchestrate/dashboard/orchestrate-status` when executable; else record
      `shared status: NOT_AVAILABLE` and skip silently. (No `~/.local/bin` symlink — that would trip the
      SAFETY GATE; the absolute path is enough for Codex.)
+   - **Codex session sidecar (optional, strict session correlation):** when this host exposes both the
+     exact absolute rollout JSONL path **and** the exact current Codex `turn_id`, pass both on the
+     first `start` as `--codex-session "$ROLLOUT" --codex-turn "$TURN_ID"`, then optionally resolve
+     and background `orchestrate-codex-sidecar --id "$RUN_ID" --session "$ROLLOUT" --turn "$TURN_ID"`.
+     Never guess a newest rollout or launch it without the exact pair. The initial turn is immutable
+     correlation metadata; recognized events in the bound rollout remain live across subsequent turns,
+     including turnless `response_item` events.
+     If either value is unavailable, record `codex sidecar: NOT_BOUND` and skip silently; Phase 1's
+     `quiet` state remains honest. The sidecar is liveness-only: it writes an isolated lease, never
+     calls `heartbeat`, never changes run JSON/steps/status, and never infers completion. The status
+     record retains only opaque bindings, never the rollout path, raw turn id, transcript text, or tool
+     output. See `orchestrate/references/shared-run-status.md` for lifecycle and launch details.
    - **Server:** if `$HOME/.claude/skills/orchestrate/dashboard/` exists and
      `curl -s -o /dev/null -w '%{http_code}' localhost:4600` isn't `200`, start it in the background
      from its real path: `nohup "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-dashboard" >/tmp/orch-dashboard.log 2>&1 &`.

@@ -36,6 +36,52 @@ orch_emit() {
 
 Do not send secrets, credentials, customer data, raw logs, or transcript content in status arguments.
 
+## Optional Codex rollout liveness (strict binding only)
+
+The dashboard can consume an isolated Codex liveness lease, but it is **not** a substitute for
+explicit `step`, `handoff`, `fail`, or `done` emissions. Use it only when this host exposes both:
+
+1. the absolute rollout JSONL path for this exact session; and
+2. the active Codex `turn_id` when this goal is bound.
+
+Never discover a "latest" rollout or infer completion from `task_complete` / turn markers. If
+either value is unavailable, record `codex sidecar: NOT_BOUND`
+in the local report and **SKIP silently**. The Phase 1 `quiet` state is intentional in that case.
+
+When both values are available at intake, include them in the initial start emission:
+
+```bash
+orch_emit start --id "$RUN_ID" --repo "$REPO" --topic "$TOPIC" \
+  --title "$TITLE" --branch "$BRANCH" \
+  --codex-session "$ROLLOUT" --codex-turn "$TURN_ID"
+```
+
+`orchestrate-status` stores only opaque hashes and a fresh run generation — never the rollout path
+or raw turn id. The binding is immutable: a later `step` may repeat the exact pair for verification,
+but cannot replace it. Resolve the optional sidecar like the emitter and launch it only after that
+successful binding:
+
+```bash
+if command -v orchestrate-codex-sidecar >/dev/null 2>&1; then
+  ORCH_SIDECAR="$(command -v orchestrate-codex-sidecar)"
+elif [ -x "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-codex-sidecar" ]; then
+  ORCH_SIDECAR="$HOME/.claude/skills/orchestrate/dashboard/orchestrate-codex-sidecar"
+else
+  ORCH_SIDECAR=""
+fi
+[ -z "$ORCH_SIDECAR" ] || nohup "$ORCH_SIDECAR" --id "$RUN_ID" --session "$ROLLOUT" --turn "$TURN_ID" \
+  >/dev/null 2>&1 &
+```
+
+The sidecar reads bounded new JSONL bytes from EOF and writes a separate generation-bound lease.
+The initial turn remains immutable binding metadata, while every recognized event in that bound
+session counts as activity across later turns, including turnless `response_item` events. It never
+calls `heartbeat`, edits run JSON, changes a step, or emits a terminal status. It exits on idle,
+SIGTERM, an inactive/removed/rebound run, or a missing/replaced/truncated rollout; a duplicate
+instance exits without taking over. `await`, `handoff`, `paused`, `rejected`,
+`failed`, and `done` are authoritative inactive states. This is optional, best-effort telemetry —
+not proof of semantic completion.
+
 ## Register a unique run
 
 Build a filesystem-safe ID from the repository, topic, branch slug, UTC timestamp, and conductor PID:

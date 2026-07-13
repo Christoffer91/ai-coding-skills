@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import fcntl
 import json
 import http.client
 import os
@@ -28,6 +29,7 @@ STATUS = DASHBOARD_DIR / "orchestrate-status"
 DASHBOARD = DASHBOARD_DIR / "orchestrate-dashboard"
 OVERRIDES = DASHBOARD_DIR / "overrides.py"
 WATCHDOG = DASHBOARD_DIR / "orchestrate-watchdog"
+SIDECAR = DASHBOARD_DIR / "orchestrate-codex-sidecar"
 SYNC = ROOT / "scripts" / "sync-public.sh"
 CODEX_ORCHESTRATE = ROOT / "skills" / "codex" / "skills" / "orchestrate"
 CODEX_PIPELINE = ROOT / "skills" / "codex" / "skills" / "pipeline" / "SKILL.md"
@@ -87,6 +89,35 @@ class EmitterTests(unittest.TestCase):
         self.assertEqual(self.data()["consoleLog"], "/tmp/other.log")
         self.status("step", "--id", "t", "--n", "2", "--state", "done")
         self.assertEqual(self.data()["consoleLog"], "/tmp/other.log")  # unchanged without --log
+
+    def test_codex_binding_is_opaque_immutable_and_pause_is_inactive(self):
+        rollout = self.home / ".codex/sessions/2026/07/13/rollout-secret.jsonl"
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text("")
+        self.status(
+            "start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b",
+            "--codex-session", str(rollout), "--codex-turn", "turn-secret",
+        )
+        bound = self.data()
+        rendered = json.dumps(bound)
+        self.assertNotIn(str(rollout), rendered)
+        self.assertNotIn("turn-secret", rendered)
+        self.assertRegex(bound["codexSession"], r"^[0-9a-f]{64}$")
+        self.assertRegex(bound["codexTurn"], r"^[0-9a-f]{64}$")
+        self.assertRegex(bound["livenessGeneration"], r"^[A-Za-z0-9_-]{12,}$")
+
+        rebound = self.status(
+            "step", "--id", "t", "--n", "2", "--state", "active",
+            "--codex-session", str(rollout), "--codex-turn", "different-turn", check=False,
+        )
+        self.assertNotEqual(rebound.returncode, 0)
+        self.assertIn("immutable", rebound.stderr)
+        self.assertEqual(self.data()["codexTurn"], bound["codexTurn"])
+
+        self.status("pause", "--id", "t")
+        self.assertEqual(self.data()["status"], "paused")
+        self.status("step", "--id", "t", "--n", "2", "--state", "active")
+        self.assertEqual(self.data()["status"], "running")
 
     def test_resume_command_start_update_clear_and_validation(self):
         self.status(
@@ -233,6 +264,234 @@ class OverrideStoreTests(unittest.TestCase):
         self.assertTrue(set(data["overrides"]).issubset({"critique", "implement"}))
 
 
+class CodexSidecarTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.rollout = self.home / ".codex/sessions/2026/07/13/rollout-test.jsonl"
+        self.rollout.parent.mkdir(parents=True)
+        self.rollout.write_bytes(b"")
+        self.env = {
+            **os.environ,
+            "HOME": str(self.home),
+            "ORCH_NOTIFY_DISABLE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        self.processes: list[subprocess.Popen[str]] = []
+        self.start_bound_run()
+
+    def tearDown(self):
+        for process in self.processes:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate(timeout=2)
+        self.tmp.cleanup()
+
+    @property
+    def run_path(self) -> Path:
+        return self.home / ".orchestrate/runs/sidecar-run.json"
+
+    def data(self) -> dict:
+        return json.loads(self.run_path.read_text())
+
+    def status(self, *args: str, check: bool = True):
+        return run("python3", "-B", str(STATUS), *args, env=self.env, check=check)
+
+    def start_bound_run(self):
+        result = self.status(
+            "start", "--id", "sidecar-run", "--repo", "repo", "--topic", "topic", "--title", "Title",
+            "--branch", "branch", "--codex-session", str(self.rollout), "--codex-turn", "turn-1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def lease_path(self) -> Path:
+        return self.home / ".orchestrate/liveness" / f"sidecar-run.{self.data()['livenessGeneration']}.json"
+
+    def lock_path(self) -> Path:
+        return self.home / ".orchestrate/liveness" / f"sidecar-run.{self.data()['livenessGeneration']}.lock"
+
+    def lock_is_held(self) -> bool:
+        path = self.lock_path()
+        if not path.exists():
+            return False
+        descriptor = os.open(path, os.O_RDWR)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(descriptor)
+
+    def launch(self, *, idle_exit: str = "2") -> subprocess.Popen[str]:
+        process = subprocess.Popen(
+            [
+                "python3", "-B", str(SIDECAR), "--id", "sidecar-run", "--session", str(self.rollout),
+                "--turn", "turn-1", "--poll", "0.01", "--idle-exit", idle_exit,
+            ],
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.processes.append(process)
+        self.assertTrue(self.wait_for(self.lock_is_held), "sidecar did not acquire its lock")
+        return process
+
+    def wait_for(self, predicate, timeout: float = 2.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.01)
+        return bool(predicate())
+
+    def write_event(self, kind: str = "turn_context", turn: str | None = "turn-1", **payload) -> None:
+        event_payload = dict(payload)
+        if turn is not None:
+            event_payload["turn_id"] = turn
+        body = {"type": kind, "payload": event_payload}
+        with self.rollout.open("ab") as handle:
+            handle.write(json.dumps(body).encode("utf-8") + b"\n")
+
+    def test_activity_writes_only_an_opaque_lease(self):
+        before = self.run_path.read_bytes()
+        process = self.launch()
+        secret = "sidecar-secret-should-not-cross-boundary"
+        self.write_event(note=secret)
+        self.assertTrue(self.wait_for(lambda: self.lease_path().exists()))
+        lease = self.lease_path().read_text()
+        self.assertEqual(self.run_path.read_bytes(), before, "sidecar must not mutate authoritative run JSON")
+        self.assertNotIn(secret, lease)
+        self.assertNotIn(secret, self.run_path.read_text())
+        self.assertNotIn(str(self.rollout), lease)
+        self.assertNotIn(str(self.rollout), self.run_path.read_text())
+
+        process.terminate()
+        stdout, stderr = process.communicate(timeout=2)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertNotIn(secret, stdout + stderr)
+        self.assertFalse(self.lease_path().exists())
+        self.assertFalse(self.lock_path().exists())
+
+    def test_session_activity_stays_live_across_turns_and_turnless_events(self):
+        process = self.launch()
+        self.write_event("turn_context", "turn-1")
+        self.assertTrue(self.wait_for(lambda: self.lease_path().exists()))
+        first_at = json.loads(self.lease_path().read_text())["at"]
+
+        self.write_event("turn_context", "turn-2")
+        self.assertTrue(self.wait_for(
+            lambda: self.lease_path().exists()
+            and json.loads(self.lease_path().read_text())["at"] > first_at
+        ))
+        second_at = json.loads(self.lease_path().read_text())["at"]
+        self.assertIsNone(process.poll(), "a new turn in the bound session must not stop the sidecar")
+
+        self.write_event("response_item", None, value="turnless activity")
+        self.assertTrue(self.wait_for(
+            lambda: self.lease_path().exists()
+            and json.loads(self.lease_path().read_text())["at"] > second_at
+        ))
+        self.assertIsNone(process.poll(), "turnless response activity must refresh the session lease")
+
+    def test_partial_oversized_and_invalid_lines_do_not_block_later_activity(self):
+        process = self.launch()
+        partial = b'{"type":"turn_context","payload":{"turn_id":"turn-1","note":"'
+        with self.rollout.open("ab") as handle:
+            handle.write(partial)
+        time.sleep(0.05)
+        self.assertFalse(self.lease_path().exists(), "partial JSON must not become activity")
+        with self.rollout.open("ab") as handle:
+            handle.write(b'secret"}}\n')
+        self.assertTrue(self.wait_for(lambda: self.lease_path().exists()))
+        first_at = json.loads(self.lease_path().read_text())["at"]
+
+        with self.rollout.open("ab") as handle:
+            handle.write(b"x" * (70 * 1024) + b"\n")
+        self.write_event("response_item", "turn-1", value="not persisted")
+        self.assertTrue(self.wait_for(
+            lambda: self.lease_path().exists() and json.loads(self.lease_path().read_text())["at"] > first_at
+        ))
+        self.assertIsNone(process.poll())
+
+    def test_idle_exit_never_marks_the_run_done(self):
+        process = self.launch(idle_exit="0.08")
+        stdout, stderr = process.communicate(timeout=2)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(self.data()["status"], "running")
+        self.assertEqual(self.data()["step"], 1)
+        self.assertFalse(self.lease_path().exists())
+        self.assertEqual(stdout + stderr, "")
+
+    def test_missing_rollout_exits_without_changing_authoritative_state(self):
+        before = self.run_path.read_bytes()
+        self.rollout.unlink()
+        process = self.launch(idle_exit="0.08")
+        stdout, stderr = process.communicate(timeout=2)
+        self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertEqual(self.run_path.read_bytes(), before)
+        self.assertFalse(self.lease_path().exists())
+
+    def test_duplicate_and_replaced_file_stop_safely(self):
+        primary = self.launch()
+        duplicate = self.launch()
+        stdout, stderr = duplicate.communicate(timeout=2)
+        self.assertEqual(duplicate.returncode, 3, stdout + stderr)
+
+        self.write_event()
+        self.assertTrue(self.wait_for(lambda: self.lease_path().exists()))
+        primary.terminate()
+        primary.communicate(timeout=2)
+        self.assertEqual(primary.returncode, 0)
+        self.assertEqual(self.data()["status"], "running")
+
+        replacement = self.rollout.with_name("rollout-replacement.jsonl")
+        replacement.write_text("")
+        restarted = self.launch()
+        self.write_event()
+        self.assertTrue(self.wait_for(lambda: self.lease_path().exists()))
+        os.replace(replacement, self.rollout)
+        restarted.communicate(timeout=2)
+        self.assertEqual(restarted.returncode, 0)
+        self.assertEqual(self.data()["status"], "running")
+
+    def test_authoritative_terminal_state_wins_the_race(self):
+        process = self.launch()
+        self.write_event()
+        self.assertTrue(self.wait_for(lambda: self.lease_path().exists()))
+        self.status("done", "--id", "sidecar-run")
+        process.communicate(timeout=2)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(self.data()["status"], "done")
+        self.assertFalse(self.lease_path().exists())
+        self.assertFalse(self.lock_path().exists())
+
+    def test_status_update_survives_lease_activity_and_generation_mismatch_stops_it(self):
+        process = self.launch()
+        self.status("step", "--id", "sidecar-run", "--n", "2", "--state", "active")
+        after_step = self.run_path.read_bytes()
+        self.write_event("task_started")
+        self.assertTrue(self.wait_for(lambda: self.lease_path().exists()))
+        lease_before_rebind = self.lease_path()
+        self.assertEqual(self.run_path.read_bytes(), after_step)
+        self.assertEqual(self.data()["step"], 2)
+        self.assertEqual(self.data()["steps"][1]["state"], "active")
+
+        changed = self.data()
+        changed["livenessGeneration"] = "different-generation-token"
+        self.run_path.write_text(json.dumps(changed))
+        stdout, stderr = process.communicate(timeout=2)
+        self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertFalse(lease_before_rebind.exists())
+
+
 class DashboardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -245,9 +504,12 @@ class DashboardTests(unittest.TestCase):
         self.answers = self.base / "answers"
         self.runs.mkdir()
         self.answers.mkdir()
+        self.liveness = self.base / "liveness"
+        self.liveness.mkdir()
         self.dashboard.RUNS = str(self.runs)
         self.dashboard.ANS = str(self.answers)
         self.dashboard.BASE = str(self.base)
+        self.dashboard.LIVENESS = str(self.liveness)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -295,6 +557,114 @@ class DashboardTests(unittest.TestCase):
         run = next(r for r in self.dashboard.load_runs() if r["id"] == "q")
         self.assertEqual(run["health"], "quiet")
         self.assertFalse(run["restartable"])
+
+    def test_matching_sidecar_lease_keeps_only_active_no_pid_run_live(self):
+        old = int(time.time()) - 1200
+        session_secret = "/private/transcript/secret-rollout.jsonl"
+        turn_secret = "turn-secret"
+        generation = "generation-token-123"
+        session = self.dashboard.liveness.opaque_session_ref(session_secret)
+        turn = self.dashboard.liveness.opaque_turn_ref(turn_secret)
+        source = self.write_run(
+            "lease-run", status="running", updatedAt=old, pid=None,
+            livenessGeneration=generation, codexSession=session, codexTurn=turn,
+        )
+        before = source.read_text()
+        self.dashboard.liveness.write_lease(
+            self.liveness, "lease-run", generation, session, turn, 17, at=time.time(),
+        )
+        live = next(run for run in self.dashboard.load_runs() if run["id"] == "lease-run")
+        self.assertEqual(live["health"], "live")
+        self.assertIn("sidecarLiveAt", live)
+        self.assertEqual(source.read_text(), before, "dashboard must not persist liveness")
+        self.assertNotIn(session_secret, json.dumps(live))
+        self.assertNotIn(turn_secret, json.dumps(live))
+
+        expected_inactive = {
+            "await": "waiting",
+            "handoff": "handoff",
+            "rejected": "rejected",
+            "failed": "failed",
+            "done": "done",
+            "paused": "paused",
+        }
+        for index, (status, health) in enumerate(expected_inactive.items()):
+            rid = f"{status}-lease"
+            self.write_run(rid, status=status, updatedAt=old, pid=None,
+                           livenessGeneration=generation, codexSession=session, codexTurn=turn)
+            self.dashboard.liveness.write_lease(
+                self.liveness, rid, generation, session, turn, index, at=time.time(),
+            )
+        self.write_run(
+            "all-done-lease", status="running", updatedAt=old, pid=None,
+            livenessGeneration=generation, codexSession=session, codexTurn=turn,
+            steps=[{"n": index + 1, "state": "done"} for index in range(7)],
+        )
+        self.dashboard.liveness.write_lease(
+            self.liveness, "all-done-lease", generation, session, turn, 99, at=time.time(),
+        )
+        health = {run["id"]: run["health"] for run in self.dashboard.load_runs()}
+        for status, expected in expected_inactive.items():
+            self.assertEqual(health[f"{status}-lease"], expected)
+        self.assertEqual(health["all-done-lease"], "done")
+
+    def test_rejected_sidecar_leases_leave_old_runs_quiet(self):
+        now = time.time()
+        old = int(now) - 1200
+        generation = "generation-token-123"
+        session = self.dashboard.liveness.opaque_session_ref("/private/session.jsonl")
+        turn = self.dashboard.liveness.opaque_turn_ref("turn-1")
+        valid = {
+            "generation": generation,
+            "session": session,
+            "turn": turn,
+            "startOffset": 17,
+            "at": now,
+        }
+        cases = {
+            "stale": {"at": now - self.dashboard.SESSION_STALE_SECS - 1},
+            "generation-mismatch": {"generation": "different-token-123"},
+            "session-mismatch": {"session": "different-session"},
+            "turn-mismatch": {"turn": "different-turn"},
+            "future": {"at": now + 1},
+            "negative-offset": {"startOffset": -1},
+        }
+        for rid, changes in cases.items():
+            self.write_run(
+                rid, status="running", updatedAt=old, pid=None,
+                livenessGeneration=generation, codexSession=session, codexTurn=turn,
+            )
+            lease = {"id": rid, **valid, **changes}
+            (self.liveness / f"{rid}.{generation}.json").write_text(json.dumps(lease))
+
+        self.write_run(
+            "malformed", status="running", updatedAt=old, pid=None,
+            livenessGeneration=generation, codexSession=session, codexTurn=turn,
+        )
+        (self.liveness / f"malformed.{generation}.json").write_text("{")
+
+        runs = {run["id"]: run for run in self.dashboard.load_runs()}
+        for rid in (*cases, "malformed"):
+            self.assertEqual(runs[rid]["health"], "quiet", rid)
+            self.assertNotIn("sidecarLiveAt", runs[rid], rid)
+
+    def test_remove_run_leases_cleans_only_exact_run_generations(self):
+        generation = "generation-token-123"
+        exact_json = self.liveness / f"a.{generation}.json"
+        exact_lock = self.liveness / f"a.{generation}.lock"
+        dotted_json = self.liveness / f"a.b.{generation}.json"
+        dotted_lock = self.liveness / f"a.b.{generation}.lock"
+        invalid_generation = self.liveness / "a.not.valid.json"
+        for path in (exact_json, exact_lock, dotted_json, dotted_lock, invalid_generation):
+            path.write_text("")
+
+        self.dashboard.liveness.remove_run_leases(self.liveness, "a")
+
+        self.assertFalse(exact_json.exists())
+        self.assertFalse(exact_lock.exists())
+        self.assertTrue(dotted_json.exists())
+        self.assertTrue(dotted_lock.exists())
+        self.assertTrue(invalid_generation.exists())
 
     def test_thresholds_are_a_single_shared_source(self):
         self.assertEqual(self.dashboard.STALE_SECS, self.dashboard.thresholds.DRIVER_STALE_SECS)
@@ -1114,6 +1484,8 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn('pause', content)
         self.assertIn('Reserve `fail', content)
         self.assertIn('phone-capable hook', content)
+        self.assertIn('orchestrate-codex-sidecar', content)
+        self.assertIn('Never discover a "latest" rollout', content)
         self.assertNotIn("first answer wins", content.lower())
 
     @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
@@ -1152,6 +1524,7 @@ class CodexParityTests(unittest.TestCase):
         # or FAST/pipeline-only goals stay invisible on the dashboard.
         self.assertIn("DASHBOARD STATUS", pipeline)
         self.assertIn("orchestrate-status", pipeline)
+        self.assertIn("codex sidecar: NOT_BOUND", pipeline)
         self.assertIn("never routes into `orchestrate`", pipeline)
         self.assertIn("HANDOFF-CLAUDE-review-<topic>.md", handover)
         self.assertIn("exact implementation session ID", handover)
@@ -1249,7 +1622,11 @@ class SyncScriptTests(unittest.TestCase):
             installed_dashboard = install_home / ".claude/skills/orchestrate/dashboard/orchestrate-dashboard"
             self.assertTrue(installed_dashboard.is_file())
             self.assertTrue(os.access(installed_dashboard, os.X_OK))
+            installed_sidecar = install_home / ".claude/skills/orchestrate/dashboard/orchestrate-codex-sidecar"
+            self.assertTrue(installed_sidecar.is_file())
+            self.assertTrue(os.access(installed_sidecar, os.X_OK))
             self.assertTrue((install_home / ".local/bin/orchestrate-driver").is_symlink())
+            self.assertTrue((install_home / ".local/bin/orchestrate-codex-sidecar").is_symlink())
             public_tests = run(
                 "python3", "-m", "unittest", "discover", "-s", str(target / "orchestrate/tests"), "-v",
                 env={**os.environ, "ORCH_NOTIFY_DISABLE": "1"},

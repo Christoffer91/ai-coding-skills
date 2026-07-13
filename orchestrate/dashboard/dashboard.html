@@ -105,6 +105,7 @@
   .pill.handoff{background:var(--claude-soft);color:var(--claude)}
   .pill.failed{background:var(--fail-soft);color:var(--fail)}
   .pill.rejected{background:var(--surface-2);color:var(--muted)}
+  .pill.paused{background:var(--surface-2);color:var(--faint)}
   .caret{color:var(--faint);transition:transform .15s;margin-left:auto;flex:0 0 auto;padding-top:4px;font-size:15px}
   .card.open .caret,.hrow.open .caret{transform:rotate(90deg)}
 
@@ -394,10 +395,11 @@ function healthOf(r){
   if(r.health) return r.health==="exited"?"exited":r.health;    // server truth wins
   return "live";
 }
-function stateOf(r){ // one visual state per card: done|failed|rejected|needs|handoff|dead|stale|live
+function stateOf(r){ // one visual state per card: done|failed|rejected|paused|needs|handoff|dead|stale|live
   if(r.status==="done")return"done";
   if(r.status==="failed"||r.status==="fail")return"failed";
   if(r.status==="rejected")return"rejected";
+  if(r.status==="paused")return"paused";
   if(isGateOpen(r))return"needs";
   if(r.status==="handoff"||healthOf(r)==="handoff")return"handoff";
   const h=healthOf(r);
@@ -487,6 +489,7 @@ function card(r,compact){
   const aStr=age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
   const pills={done:'<span class="pill done">merged ✓</span>',failed:'<span class="pill failed">failed</span>',
     rejected:'<span class="pill rejected">rejected</span>',
+    paused:'<span class="pill paused">paused</span>',
     needs:'<span class="pill needs">needs you</span>',handoff:'<span class="pill handoff">with Claude · review</span>',
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled · ${aStr}</span>`,
     quiet:`<span class="pill quiet">◦ no recent update · ${aStr}</span>`,
@@ -508,7 +511,7 @@ function card(r,compact){
     const command=(r.review&&r.review.command)||`/orchestrate review ${r.topic}`;
     actions=`<div class="actions"><button class="btn sm" data-copy-review="${esc(command)}">⧉ copy review command</button></div>`;
   } else actions=recoveryAction(r,st);
-  const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
+  const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",paused:"var(--faint)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
   const slim=compact&&!open[r.id];
   const statsBlock=slim
     ?`<div class="cline"><span><b>${r.step||0}</b>/7</span><span>${r.startedAt?dur(r.startedAt):"—"}</span><span>upd ${r.updatedAt?ago(r.updatedAt):"—"}</span>${m.tests?`<span>${esc(m.tests)}</span>`:""}${r.pr?prBit(r):""}</div>`
@@ -540,8 +543,9 @@ function trow(r){
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled ${aStr}</span>`,
     quiet:`<span class="pill quiet">◦ no recent update ${aStr}</span>`,
     live:'<span class="pill live"><span class="d"></span>running</span>',failed:'<span class="pill failed">failed</span>',
-    done:'<span class="pill done">merged ✓</span>',rejected:'<span class="pill rejected">rejected</span>'};
-  const edge={needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",live:"var(--live)",failed:"var(--fail)",done:"var(--done)",rejected:"var(--muted)"}[st];
+    done:'<span class="pill done">merged ✓</span>',rejected:'<span class="pill rejected">rejected</span>',
+    paused:'<span class="pill paused">paused</span>'};
+  const edge={needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",live:"var(--live)",failed:"var(--fail)",done:"var(--done)",rejected:"var(--muted)",paused:"var(--faint)"}[st];
   const actTxt=cur?`${cur.name}${cur.note?" — "+cur.note:""}`:"";
   let acts="";
   if(["stale","dead","failed"].includes(st))acts=recoveryAction(r,st);
@@ -584,6 +588,7 @@ function render(){
   {const wk=Date.now()/1000-7*86400;const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(Number((r.metrics||{})["tokens.total"])||0):0),0);
   if(tok7d>0)chips.push(`<span class="schip" style="color:var(--faint)">≈${esc(fmtTokens(tok7d))} tokens · 7d</span>`);}
   if(cnt("handoff"))chips.push(`<span class="schip claude"><span class="n">${cnt("handoff")}</span> with claude</span>`);
+  if(cnt("paused"))chips.push(`<span class="schip quiet"><span class="n">${cnt("paused")}</span> paused</span>`);
   if(cnt("rejected"))chips.push(`<span class="schip"><span class="n">${cnt("rejected")}</span> rejected</span>`);
   if(cnt("done"))chips.push(`<span class="schip"><span class="n">${cnt("done")}</span> done</span>`);
   document.getElementById("strip").innerHTML=chips.join("")||"";

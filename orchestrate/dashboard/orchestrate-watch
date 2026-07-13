@@ -11,8 +11,17 @@ No dependencies (Python 3 stdlib, ANSI colors).
 """
 import argparse, glob, json, os, sys, time
 
-RUNS = os.path.join(os.path.expanduser("~"), ".orchestrate", "runs")
-STALE = int(os.environ.get("ORCH_STALE_SECS", "75"))
+HERE = os.path.dirname(os.path.realpath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import liveness
+import thresholds
+
+HOME = os.path.expanduser("~")
+RUNS = os.path.join(HOME, ".orchestrate", "runs")
+LIVENESS = os.path.join(HOME, ".orchestrate", "liveness")
+DRIVER_STALE = thresholds.DRIVER_STALE_SECS
+SESSION_QUIET = thresholds.SESSION_QUIET_SECS
 
 C = {"reset": "\x1b[0m", "dim": "\x1b[2m", "bold": "\x1b[1m",
      "green": "\x1b[32m", "amber": "\x1b[33m", "red": "\x1b[31m",
@@ -31,13 +40,18 @@ def health_of(r, age):
     if st == "done": return ("done", "grey", "✓")
     if st in ("failed", "fail"): return ("failed", "red", "✗")
     if st == "handoff": return ("with Claude", "clay", "⇄")
+    if st == "rejected": return ("rejected", "grey", "■")
+    if st == "paused": return ("paused", "grey", "Ⅱ")
+    if st == "await": return ("NEEDS YOU", "amber", "◆")
     if r.get("gate"): return ("NEEDS YOU", "amber", "◆")
     pid = r.get("pid")
     if pid:
         try: os.kill(int(pid), 0)
         except ProcessLookupError: return ("not running", "red", "■")
         except Exception: pass
-    if age > STALE: return (f"stalled", "amber", "⚠")
+        if age > DRIVER_STALE: return (f"stalled", "amber", "⚠")
+    elif age > SESSION_QUIET:
+        return ("quiet", "grey", "◦")
     return ("live", "green", "●")
 
 def current_step(r):
@@ -53,7 +67,13 @@ def render(show_all):
             r = json.load(open(f))
         except Exception:
             continue
-        age = now - r.get("updatedAt", now)
+        try:
+            updated_at = float(r.get("updatedAt", now))
+        except (TypeError, ValueError):
+            updated_at = now
+        lease_at = liveness.matching_lease_activity(r, LIVENESS, now, SESSION_QUIET)
+        activity_at = max(updated_at, lease_at) if lease_at is not None else updated_at
+        age = max(0, now - activity_at)
         if not show_all and r.get("status") in ("done", "failed", "fail") and age > 86400:
             continue
         rows.append((r, age))

@@ -117,7 +117,7 @@ def sweep(grace, handled):
         except Exception:
             continue
         status = r.get("status")
-        if status in ("done", "failed", "fail", "handoff", "await"):
+        if status in ("done", "failed", "fail", "handoff", "await", "paused", "rejected"):
             continue
         answered = os.path.exists(os.path.join(ANS, os.path.basename(f)))
         if r.get("gate") and not answered:

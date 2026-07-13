@@ -6,8 +6,10 @@ driver at each step. No dependencies (Python 3 stdlib).
 
   orchestrate-status start  --id ID --repo R --topic T --title "…" --branch B \
                             [--planner "Opus 4.8"] [--executor "gpt-5.6-sol · medium"] \
-                            [--mode supervised] [--resume-command "…"] [--log /abs/run.log]
-  orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"] [--log /abs/run.log]
+                            [--mode supervised] [--resume-command "…"] [--log /abs/run.log] \\
+                            [--codex-session /abs/rollout.jsonl --codex-turn TURN]
+  orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"] [--log /abs/run.log] \\
+                            [--codex-session /abs/rollout.jsonl --codex-turn TURN]
   orchestrate-status pr     --id ID --number N --url U [--state OPEN]
   orchestrate-status metric --id ID --key tests --value "12/12"
   orchestrate-status worker --id ID --pid PID --pid-start TOKEN --pgid PGID --cwd DIR
@@ -39,14 +41,17 @@ HERE = os.path.dirname(os.path.realpath(__file__))  # resolve ~/.local/bin symli
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import overrides
+import liveness
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
 RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
+LIVENESS = os.path.join(BASE, "liveness")
 STEP_NAMES = ["Plan", "Critique plan", "Implement", "Open PR", "Review PR", "Apply edits", "Deploy"]
 STEP_ACTORS = ["Claude", "gpt-5.6-sol", "gpt-5.6-sol·med", "driver", "Claude", "gpt-5.6-sol·med", "gated"]
 MAX_RESUME_COMMAND_LENGTH = 1000
+TERMINAL_STATUSES = frozenset(("done", "failed", "fail", "handoff", "rejected"))
 
 
 def resume_command_arg(value):
@@ -88,6 +93,39 @@ def need(rid):
     if r is None:
         sys.exit(f"orchestrate-status: no run '{rid}' (run `start` first)")
     return r
+
+
+def codex_binding(args):
+    """Hash an optional session/turn pair before it ever reaches run JSON."""
+    session = getattr(args, "codex_session", None)
+    turn = getattr(args, "codex_turn", None)
+    if session is None and turn is None:
+        return None
+    if not session or not turn:
+        sys.exit("--codex-session and --codex-turn must be supplied together")
+    if len(turn) > 512 or not turn.isprintable():
+        sys.exit("--codex-turn must be a printable value of at most 512 characters")
+    return {
+        "codexSession": liveness.opaque_session_ref(session),
+        "codexTurn": liveness.opaque_turn_ref(turn),
+    }
+
+
+def apply_codex_binding(record, binding):
+    """Set a binding once; a later step may verify but never replace it."""
+    if binding is None:
+        return
+    existing = {key: record.get(key) for key in binding}
+    if any(value is not None for value in existing.values()):
+        if existing != binding:
+            sys.exit("Codex session binding is immutable for an existing run")
+        return
+    record.update(binding)
+    record.setdefault("livenessGeneration", liveness.new_generation())
+
+
+def clear_liveness(run_id):
+    liveness.remove_run_leases(LIVENESS, os.path.basename(run_id))
 
 
 def _strip_toml_comment(value):
@@ -187,11 +225,19 @@ def main():
     p.add_argument("--resume-command", type=resume_command_arg, default=None)
     p.add_argument("--env", action="append", default=[])
     p.add_argument("--log", default=None, help="absolute path to THIS run's console/output log")
+    p.add_argument("--codex-session", default=None,
+                   help="rollout locator; only an opaque reference is stored")
+    p.add_argument("--codex-turn", default=None,
+                   help="exact Codex turn locator; only an opaque reference is stored")
 
     p = sub.add_parser("step"); common(p)
     p.add_argument("--n", type=int, required=True); p.add_argument("--state", required=True)
     p.add_argument("--note", default=None); p.add_argument("--actor", default=None); p.add_argument("--pid", type=int, default=None)
     p.add_argument("--log", default=None, help="absolute path to THIS run's console/output log")
+    p.add_argument("--codex-session", default=None,
+                   help="rollout locator; only an opaque reference is stored")
+    p.add_argument("--codex-turn", default=None,
+                   help="exact Codex turn locator; only an opaque reference is stored")
 
     p = sub.add_parser("pr"); common(p)
     p.add_argument("--number", required=True); p.add_argument("--url", required=True); p.add_argument("--state", default="OPEN")
@@ -259,6 +305,7 @@ def main():
             sys.exit(f"orchestrate-status: {exc}")
 
     elif a.cmd == "start":
+        binding = codex_binding(a)
         restart_env = {}
         for item in a.env:
             key, sep, value = item.partition("=")
@@ -266,7 +313,7 @@ def main():
                 restart_env[key] = value
         steps = [{"n": i + 1, "name": STEP_NAMES[i], "actor": STEP_ACTORS[i],
                   "state": "active" if i == 0 else "pending"} for i in range(7)]
-        save({"id": os.path.basename(a.id), "repo": a.repo, "topic": a.topic, "title": a.title,
+        record = {"id": os.path.basename(a.id), "repo": a.repo, "topic": a.topic, "title": a.title,
               "branch": a.branch, "planner": a.planner, "executor": a.executor, "mode": a.mode,
               "startedAt": int(time.time()), "step": 1, "status": "running", "pid": a.pid,
               "cwd": a.cwd, "repoRoot": a.repo_root or a.cwd, "driver": a.driver,
@@ -275,10 +322,14 @@ def main():
               "consoleLog": os.path.abspath(a.log) if a.log else None,
               "resumeCommand": a.resume_command,
               "restart": {"plan": a.plan, "dedicatedWorktree": a.worktree, "env": restart_env},
-              "pr": None, "metrics": {}, "gate": None, "steps": steps})
+              "pr": None, "metrics": {}, "gate": None, "steps": steps,
+              "livenessGeneration": liveness.new_generation()}
+        apply_codex_binding(record, binding)
+        save(record)
+        clear_liveness(record["id"])
 
     elif a.cmd == "step":
-        r = need(a.id); i = a.n - 1
+        r = need(a.id); apply_codex_binding(r, codex_binding(a)); i = a.n - 1
         if not (0 <= i < 7): sys.exit("--n must be 1..7")
         now = int(time.time())
         prev = r["steps"][i].get("state")
@@ -292,7 +343,9 @@ def main():
         r["step"] = a.n
         if a.pid: r["pid"] = a.pid
         if a.log: r["consoleLog"] = os.path.abspath(a.log)
-        if r.get("status") not in ("await", "done", "failed"):
+        # A new explicit step resumes a paused run, but cannot resurrect a
+        # terminal/handoff/rejected run through an incidental status emit.
+        if r.get("status") not in ("await", *TERMINAL_STATUSES):
             r["status"] = "review" if (a.n == 6 and a.state == "active") else \
                           "fail" if a.state == "fail" else "running"
         save(r)
@@ -335,6 +388,7 @@ def main():
             try: os.remove(af)
             except OSError: pass
         save(r)
+        clear_liveness(r["id"])
         notify(r, f"orchestrate {r.get('repo')}/{r.get('topic')} needs you: {a.question}")
 
     elif a.cmd == "wait":
@@ -371,6 +425,7 @@ def main():
         r = need(a.id)
         r["steps"][6]["state"] = "done" if a.status == "done" else "fail"
         r["step"] = 7; r["status"] = a.status; r["gate"] = None; save(r)
+        clear_liveness(r["id"])
 
     elif a.cmd == "handoff":
         r = need(a.id)
@@ -379,6 +434,7 @@ def main():
         r["review"] = {"baton": a.baton, "command": a.review_command,
                        "iteration": 0, "maxIterations": a.max_iterations}
         save(r)
+        clear_liveness(r["id"])
         pr_number = (r.get("pr") or {}).get("number", "?")
         command = a.review_command or f"/orchestrate review {r.get('topic')}"
         notify(r, f"PR #{pr_number} ready for review — run: {command}")
@@ -389,18 +445,23 @@ def main():
         if r.get("steps"): r["steps"][i]["state"] = "fail"
         r["status"] = "failed"; r["gate"] = None; r["worker"] = None
         save(r)
+        clear_liveness(r["id"])
         notify(r, f"orchestrate {r.get('repo')}/{r.get('topic')} failed at step {r.get('step', 1)}")
 
     elif a.cmd == "pause":
         r = need(a.id)
-        r["pid"] = None; r["worker"] = None
+        # A displayed gate is already the authoritative inactive ``await`` state;
+        # otherwise record an explicit paused state instead of leaving ``running``.
+        r["status"] = "await" if r.get("gate") else "paused"; r["pid"] = None; r["worker"] = None
         save(r)
+        clear_liveness(r["id"])
 
     elif a.cmd == "cancel":
         r = need(a.id)
         r["status"] = "rejected"; r["pid"] = None; r["worker"] = None; r["gate"] = None
         r["checkpoint"] = None; r["reason"] = a.reason
         save(r)
+        clear_liveness(r["id"])
 
     elif a.cmd == "checkpoint":
         r = need(a.id)
@@ -426,6 +487,7 @@ def main():
         for d in (RUNS, ANS):
             f = os.path.join(d, os.path.basename(a.id) + ".json")
             if os.path.exists(f): os.remove(f)
+        clear_liveness(a.id)
 
 if __name__ == "__main__":
     main()

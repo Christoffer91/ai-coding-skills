@@ -38,7 +38,7 @@ cp "$HERE/claude/skills/orchestrate/SKILL.md" "$DEST/SKILL.md"
 cp "$HERE/claude/skills/orchestrate/references/"*.md "$DEST/references/"
 cp -R "$HERE/dashboard" "$DEST/dashboard"
 chmod +x "$HERE/scripts/orchestrate.sh"
-for tool in orchestrate-dashboard orchestrate-status orchestrate-watchdog; do
+for tool in orchestrate-dashboard orchestrate-status orchestrate-watchdog orchestrate-codex-sidecar; do
   chmod +x "$DEST/dashboard/$tool"
 done
 echo "  ✓ skill + dashboard installed -> $DEST"
@@ -60,7 +60,7 @@ fi
 link_tools() {
   mkdir -p "$BIN_DEST"
   ln -sfn "$HERE/scripts/orchestrate.sh" "$BIN_DEST/orchestrate-driver"
-  for tool in orchestrate-dashboard orchestrate-status orchestrate-watchdog; do
+  for tool in orchestrate-dashboard orchestrate-status orchestrate-watchdog orchestrate-codex-sidecar; do
     ln -sfn "$DEST/dashboard/$tool" "$BIN_DEST/$tool"
   done
   echo "  ✓ PATH tools linked -> $BIN_DEST"
