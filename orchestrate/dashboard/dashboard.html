@@ -481,7 +481,8 @@ function detail(r){
     let t="";
     if(s.state==="active"&&s.startedAt) t=`<span class="tchip on ${k==="claude"?"claude":""}">${span(s.startedAt)}…${tokBit(s)}</span>`;
     else if(s.state==="done"&&s.startedAt&&s.endedAt) t=`<span class="tchip">${span(s.startedAt,s.endedAt)}${tokBit(s)}</span>`;
-    else if(s.state==="fail") t=`<span class="tchip" style="color:var(--fail)">failed</span>`;
+    else if(s.state==="fail") t=`<span class="tchip" style="color:var(--fail)">failed${tokBit(s)}</span>`;
+    else if(stepTok(s)) t=`<span class="tchip">${fmtTok(stepTok(s))}</span>`;  // tokens even without a timing chip
     // Clickable when this step has its own captured log — opens that agent's output in the terminal view.
     const log=stepLogs.includes(s.n)
       ? `<a class="steplog" href="/console?id=${encodeURIComponent(r.id)}&step=${s.n}" target="_blank" rel="noopener" data-stop title="Open step ${s.n} log (${esc(s.actor||'')})">⌗ log ↗</a>`

@@ -73,6 +73,18 @@ class EmitterTests(unittest.TestCase):
     def data(self) -> dict:
         return json.loads((self.home / ".orchestrate/runs/t.json").read_text())
 
+    def test_step_records_per_step_tokens_without_touching_state(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("step", "--id", "t", "--n", "3", "--state", "active", "--actor", "Terra")
+        # A metadata-only step emit (tokens, no --state) records tokens and leaves state active.
+        self.status("step", "--id", "t", "--n", "3", "--tokens", "45000")
+        self.assertEqual(self.data()["steps"][2]["tokens"], 45000)
+        self.assertEqual(self.data()["steps"][2]["state"], "active")
+        # and a real transition still works after
+        self.status("step", "--id", "t", "--n", "3", "--state", "done")
+        self.assertEqual(self.data()["steps"][2]["state"], "done")
+        self.assertEqual(self.data()["steps"][2]["tokens"], 45000)  # preserved
+
     def test_done_normalizes_status_to_terminal_enum(self):
         # A caller that passes prose as --status (e.g. a Codex goal summary) must still close the
         # run: any non-failed value becomes "done". Otherwise the polluted status never matches the

@@ -232,9 +232,10 @@ def main():
                    help="exact Codex turn locator; only an opaque reference is stored")
 
     p = sub.add_parser("step"); common(p)
-    p.add_argument("--n", type=int, required=True); p.add_argument("--state", required=True)
+    p.add_argument("--n", type=int, required=True); p.add_argument("--state", default=None)
     p.add_argument("--note", default=None); p.add_argument("--actor", default=None); p.add_argument("--pid", type=int, default=None)
     p.add_argument("--log", default=None, help="absolute path to THIS run's console/output log")
+    p.add_argument("--tokens", type=int, default=None, help="tokens this step's agent used")
     p.add_argument("--codex-session", default=None,
                    help="rollout locator; only an opaque reference is stored")
     p.add_argument("--codex-turn", default=None,
@@ -343,11 +344,15 @@ def main():
             )
         now = int(time.time())
         prev = r["steps"][i].get("state")
-        if a.state == "active" and prev != "active":
-            r["steps"][i]["startedAt"] = now
-        elif a.state in ("done", "fail") and prev == "active":
-            r["steps"][i]["endedAt"] = now
-        r["steps"][i]["state"] = a.state
+        # --state is optional: a metadata-only update (e.g. --tokens or --log) leaves state intact.
+        if a.state is not None:
+            if a.state == "active" and prev != "active":
+                r["steps"][i]["startedAt"] = now
+            elif a.state in ("done", "fail") and prev == "active":
+                r["steps"][i]["endedAt"] = now
+            r["steps"][i]["state"] = a.state
+            r["status"] = "review" if (a.n == 6 and a.state == "active") else \
+                          "fail" if a.state == "fail" else "running"
         if a.note is not None: r["steps"][i]["note"] = a.note
         if a.actor: r["steps"][i]["actor"] = a.actor
         r["step"] = a.n
@@ -358,8 +363,8 @@ def main():
             log_abs = os.path.abspath(a.log)
             r["steps"][i]["log"] = log_abs
             r["consoleLog"] = log_abs
-        r["status"] = "review" if (a.n == 6 and a.state == "active") else \
-                      "fail" if a.state == "fail" else "running"
+        if a.tokens is not None and a.tokens >= 0:
+            r["steps"][i]["tokens"] = a.tokens   # per-step token count shown next to the step
         save(r)
 
     elif a.cmd == "pr":

@@ -115,6 +115,10 @@ orch_emit resume-command --id "$RUN_ID" --clear
 ## Seven-step relay
 
 Emit both state and actor so Codex-primary runs do not inherit Claude-centric defaults. Mark a step `active` before work and `done` only after its evidence is recorded.
+Give every phase its own captured output file and pass that same path with `--log` on EVERY
+`step --state active|done` emission. The emitter stores it in `steps[N-1].log`; clicking step 1–7
+then opens exactly that agent's output rather than another phase's run-level console. For example,
+use the file supplied to `codex exec -o` for a Codex phase.
 
 | Step | Work | Actor | Notes |
 |---|---|---|---|
@@ -129,9 +133,12 @@ Emit both state and actor so Codex-primary runs do not inherit Claude-centric de
 Example transition:
 
 ```bash
+STEP_LOG="$HOME/.orchestrate/artifacts/$RUN_ID/step-3-execute.log"
 orch_emit step --id "$RUN_ID" --n 3 --state active \
-  --actor "Terra · medium" --note "$SMALLEST_STEP"
-orch_emit step --id "$RUN_ID" --n 3 --state done --actor "Terra · medium"
+  --actor "Terra · medium" --note "$SMALLEST_STEP" --log "$STEP_LOG"
+# Capture this phase's output in "$STEP_LOG", for example with `codex exec -o "$STEP_LOG" ...`.
+orch_emit step --id "$RUN_ID" --n 3 --state done \
+  --actor "Terra · medium" --log "$STEP_LOG"
 ```
 
 An inactive run never resumes through an incidental `step`. After a new user message explicitly
@@ -145,7 +152,7 @@ This preserves PR/review metadata, rotates the liveness generation, and clears s
 `needsRestart`/watchdog evidence. `await`, `done`, `failed`, and `rejected` cannot be resumed this
 way. Answer an `await` gate through its recorded option; create a fresh run after a terminal result.
 
-For recoverable `needs-rework`, `ESCALATE/BLOCKED`, or no-progress stops, keep the run non-terminal: emit the current step as `pending` with a short reason and then `pause`. Reserve `fail --id "$RUN_ID"` for an actual terminal failure. On successful local completion use `done --id "$RUN_ID"`; a `PR_READY` review handoff uses the handoff sequence below instead.
+For recoverable `needs-rework`, `ESCALATE/BLOCKED`, or no-progress stops, keep the run non-terminal: emit the current step as `pending` with a short reason and then `pause`. Reserve `fail --id "$RUN_ID"` for an actual terminal failure. On successful local completion use `done --id "$RUN_ID"`. A `PR_READY` review handoff emits the handoff metadata below and then `done --id "$RUN_ID"` to close this round; the reviewer starts a fresh run ID.
 
 ## Timeouts and lifecycle closure
 
@@ -155,12 +162,17 @@ start immediately. Otherwise update the resume command, return the active step t
 short factual note, and emit `pause`. Do not relabel a timeout as progress or keep retrying merely to
 refresh the dashboard.
 
-Before returning control to the user, close every successfully started status run with exactly one
-honest lifecycle outcome: `pause` for resumable blocked or timed-out work, `handoff` for a registered
-review baton, `done` for completed work, `fail` for terminal failure, or `cancel` for an explicit
-abort/rejection. A final response is not a lifecycle outcome; never leave the record in `running`,
-`review`, or a partially active step after the work has stopped. Emitter failure remains non-fatal to
-the underlying task, but record `shared status: EMIT_FAILED` in the local report.
+Before returning control to the user, close every successfully started status run honestly: `pause`
+for resumable blocked or timed-out work, or `cancel` for an explicit abort/rejection. A finished or
+handed-over round ALWAYS ends with the clean terminal command `done --id "$RUN_ID"`, or
+`fail --id "$RUN_ID"` for terminal failure; when registering a review baton, emit `handoff` first and
+then `done`. Never pass prose through `done --status`; the emitter's normalization is a defensive
+safety net, not an output channel. A final response is not a lifecycle outcome; never leave the record
+in `running`, `review`, `handoff`, or a partially active step after the round has stopped. A pid-less
+non-terminal run silent for more than six hours with no fresh sidecar lease is auto-retired to the
+terminal `abandoned` state, but that cleanup is not a substitute for an explicit `done`/`fail` emit.
+Emitter failure remains non-fatal to the underlying task, but record `shared status: EMIT_FAILED` in
+the local report.
 
 ## Best-effort token metrics
 
@@ -218,6 +230,8 @@ orch_emit metric --id "$RUN_ID" --key session --value "$IMPLEMENTATION_SESSION_I
 orch_emit handoff --id "$RUN_ID" \
   --baton "$PWD/HANDOFF-CLAUDE-review-$TOPIC.md" \
   --review-command "/orchestrate review $TOPIC"
+orch_emit done --id "$RUN_ID"
 ```
 
-The metric key is exactly `session`; Claude review entry validates that key together with `status=handoff`, PR metadata, and the readable absolute baton path.
+The metric key is exactly `session`; the handoff emit validates the PR metadata and readable absolute
+baton path before the current round closes as `done`. Claude review starts as a fresh dashboard run.

@@ -397,8 +397,8 @@ capture_session() {
 # running total on the next line. Best-effort only: every pipeline is guarded so a
 # missing pattern or malformed number can never fail the run (set -Eeuo pipefail).
 TOKENS_TOTAL=0
-capture_tokens() { # <log> <role>
-  local log="$1" role="$2" tokens=""
+capture_tokens() { # <log> <role> [step_n]
+  local log="$1" role="$2" step_n="${3:-}" tokens=""
   [[ -n "$role" && -f "$log" ]] || return 0
   tokens="$(awk '
     prev ~ /tokens used/ { s=$0; gsub(/[,[:space:]]/, "", s); if (s ~ /^[0-9]+$/) last=s }
@@ -409,6 +409,8 @@ capture_tokens() { # <log> <role>
   TOKENS_TOTAL=$((TOKENS_TOTAL + 10#$tokens))
   emit metric --id "$RUN_ID" --key "tokens.$role" --value "$tokens"
   emit metric --id "$RUN_ID" --key "tokens.total" --value "$TOKENS_TOTAL"
+  # Per-step token count (shown next to the step on the dashboard). No --state: metadata-only.
+  [[ -n "$step_n" ]] && emit step --id "$RUN_ID" --n "$step_n" --tokens "$tokens"
   return 0
 }
 
@@ -622,7 +624,7 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
       if wait "$cpid"; then rc=0; else rc=$?; fi
       capture_session "$log"
       if [[ "$rc" -eq 0 ]]; then
-        capture_tokens "$log" "$role"
+        capture_tokens "$log" "$role" "$step_n"
         return 0
       fi
       echo "  Codex failed (log: $log)" >&2
