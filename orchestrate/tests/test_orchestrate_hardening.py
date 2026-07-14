@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.machinery
 import importlib.util
 import fcntl
 import json
 import http.client
+import io
 import os
 from pathlib import Path
 import re
@@ -22,6 +24,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "scripts" / "orchestrate.sh"
 VERIFY_HELPER = ROOT / "scripts" / "orchestrate_verify.py"
+CLAUDE_HELPER = ROOT / "scripts" / "claude_review.py"
+CODEX_CLAUDE_RUNNER = ROOT / "codex/skills/orchestrate/scripts/claude_review.py"
 DASHBOARD_DIR = ROOT / "claude/skills/orchestrate/dashboard"
 if not DASHBOARD_DIR.exists():
     DASHBOARD_DIR = ROOT / "dashboard"
@@ -252,6 +256,11 @@ class OverrideStoreTests(unittest.TestCase):
         self.assertEqual(self.overrides.get_overrides(now=220, store_path=self.store)["overrides"], {})
 
     def test_validation_and_concurrent_updates_fail_closed(self):
+        fable = self.overrides.set_override(
+            {"role": "critique", "provider": "claude", "model": "fable", "ttl": 60},
+            now=99, store_path=self.store,
+        )
+        self.assertEqual(fable["model"], "fable")
         bad = [
             {"role": "fix", "effort": "low"},
             {"role": "implement", "provider": "claude", "model": "claude-sonnet-4-6"},
@@ -534,6 +543,25 @@ class DashboardTests(unittest.TestCase):
         path = self.runs / f"{rid}.json"
         path.write_text(json.dumps(data))
         return path
+
+    def test_step_log_resolves_per_step_artifacts(self):
+        # Clicking step N on a card opens that agent's own output — critique.md for step 2,
+        # implementation.md for step 3 — never a different step's log.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            (base / "artifacts" / "r").mkdir(parents=True)
+            (base / "artifacts" / "r" / "critique.md").write_text("Sol critique\n")
+            (base / "artifacts" / "r" / "implementation.md").write_text("Terra implementation\n")
+            with mock.patch.object(self.dashboard, "BASE", str(base)):
+                rec = {"id": "r", "steps": [{"n": i + 1} for i in range(7)]}
+                self.assertTrue(self.dashboard.step_log_for(rec, 2).endswith("critique.md"))
+                self.assertTrue(self.dashboard.step_log_for(rec, 3).endswith("implementation.md"))
+                self.assertIsNone(self.dashboard.step_log_for(rec, 1))  # no artifact for Plan
+                self.assertEqual(self.dashboard.steps_with_logs(rec), [2, 3, 6])
+                # explicit steps[n-1].log overrides the convention
+                explicit = base / "custom.log"; explicit.write_text("x\n")
+                rec["steps"][0]["log"] = str(explicit)
+                self.assertEqual(self.dashboard.step_log_for(rec, 1), str(explicit))
 
     def test_console_log_is_per_run_with_no_global_fallback(self):
         # A run's console must never fall back to another run's (or any global) log.
@@ -823,6 +851,14 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("tokens · 7d", html)
         self.assertIn("if(tok7d>0)", html)
 
+    def test_dashboard_separates_failed_history_from_dead_workers(self):
+        html = (DASHBOARD_DIR / "dashboard.html").read_text()
+        self.assertNotIn('cnt("dead")+cnt("failed")', html)
+        self.assertIn('if(cnt("dead"))chips.push', html)
+        self.assertIn('if(cnt("failed"))chips.push', html)
+        self.assertIn('cnt("failed")}</span> failed', html)
+        self.assertGreaterEqual(html.count('quiet:"var(--border-strong)"'), 2)
+
     def test_overrides_api_uses_real_http_validation_and_serialization(self):
         class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
             allow_reuse_address = True
@@ -870,6 +906,25 @@ class WatchdogTests(unittest.TestCase):
              mock.patch.object(self.watchdog.os, "kill") as kill:
             self.assertEqual(self.watchdog.reap_recorded_worker(run_data), [])
         kill.assert_not_called()
+
+    def test_sweep_auto_retires_abandoned_no_worker_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            runs = home / ".orchestrate" / "runs"; runs.mkdir(parents=True)
+            (home / ".orchestrate" / "answers").mkdir()
+            (home / ".orchestrate" / "liveness").mkdir()
+            abandoned = int(time.time()) - 7 * 3600   # 7h silent, past the 6h abandon window
+            quiet = int(time.time()) - 300            # 5 min: still just "quiet", not abandoned
+            (runs / "old.json").write_text(json.dumps(
+                {"id": "old", "status": "running", "updatedAt": abandoned, "pid": None}))
+            (runs / "fresh.json").write_text(json.dumps(
+                {"id": "fresh", "status": "running", "updatedAt": quiet, "pid": None}))
+            with mock.patch.object(self.watchdog, "RUNS", str(runs)), \
+                 mock.patch.object(self.watchdog, "ANS", str(home / ".orchestrate" / "answers")), \
+                 mock.patch.object(self.watchdog, "LIVENESS_DIR", str(home / ".orchestrate" / "liveness")):
+                self.watchdog.sweep(grace=180, handled={})
+            self.assertEqual(json.loads((runs / "old.json").read_text())["status"], "abandoned")
+            self.assertEqual(json.loads((runs / "fresh.json").read_text())["status"], "running")
 
     def test_sweep_ignores_silent_no_worker_runs_but_flags_worker_backed(self):
         with tempfile.TemporaryDirectory() as td:
@@ -955,6 +1010,109 @@ class VerifyHelperTests(unittest.TestCase):
         self.assertEqual(classify(["src/old.py", "tests/renamed.spec.ts"]), "src+tests")
 
 
+class ClaudeReviewHelperTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.helper = load_script("claude_review_test", CLAUDE_HELPER)
+
+    def test_auth_mode_distinguishes_subscription_and_metered(self):
+        subscription = {
+            "loggedIn": True,
+            "authMethod": "claude.ai",
+            "apiProvider": "firstParty",
+            "subscriptionType": "max",
+        }
+        self.assertEqual(self.helper.auth_mode(subscription), "subscription")
+        self.assertEqual(self.helper.auth_mode({**subscription, "authMethod": "apiKey"}), "metered")
+        with self.assertRaises(self.helper.ContractError):
+            self.helper.auth_mode({**subscription, "loggedIn": False})
+
+    def test_result_contract_bounds_retry_and_verifies_model_metadata(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "review.md"
+            retry = self.helper.extract_result(
+                {"is_error": True, "api_error_status": 429}, output, True, None, True,
+            )
+            self.assertEqual(retry, 10)
+            with contextlib.redirect_stdout(io.StringIO()):
+                ok = self.helper.extract_result(
+                    {
+                        "is_error": False,
+                        "result": "approved review",
+                        "modelUsage": {"claude-opus-4-8": {}},
+                        "total_cost_usd": 0.2,
+                    },
+                    output,
+                    False,
+                    "opus",
+                    True,
+                )
+            self.assertEqual(ok, 0)
+            self.assertEqual(output.read_text(), "approved review\n")
+            with self.assertRaises(self.helper.ContractError):
+                self.helper.extract_result(
+                    {"is_error": False, "result": "unknown", "modelUsage": {}},
+                    output,
+                    False,
+                    None,
+                    True,
+                )
+            with self.assertRaises(self.helper.ContractError):
+                self.helper.extract_result(
+                    {
+                        "is_error": False,
+                        "result": "x" * (self.helper.MAX_RESULT_BYTES + 1),
+                        "modelUsage": {"claude-opus-4-8": {}},
+                    },
+                    output,
+                    False,
+                    "opus",
+                    True,
+                )
+
+    def test_fable_subscription_limit_is_retryable_but_generic_quota_is_not(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "review.md"
+            retry = self.helper.extract_result(
+                {
+                    "subtype": "success",
+                    "is_error": True,
+                    "result": "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+                    "modelUsage": {},
+                    "models": [],
+                    "total_cost_usd": 0,
+                },
+                output,
+                True,
+                None,
+                True,
+            )
+            self.assertEqual(retry, 10)
+            with self.assertRaises(self.helper.ContractError):
+                self.helper.extract_result(
+                    {
+                        "is_error": True,
+                        "result": "You've reached your usage limit.",
+                        "modelUsage": {},
+                    },
+                    output,
+                    True,
+                    None,
+                    True,
+                )
+            with self.assertRaises(self.helper.ContractError):
+                self.helper.extract_result(
+                    {
+                        "is_error": True,
+                        "result": "You've reached your Fable 5 limit.",
+                        "modelUsage": {},
+                        "models": ["claude-fable-5"],
+                    },
+                    output,
+                    True,
+                    None,
+                    True,
+                )
 class DriverTests(unittest.TestCase):
     def make_repo(self) -> tuple[tempfile.TemporaryDirectory, Path, dict[str, str]]:
         tmp = tempfile.TemporaryDirectory()
@@ -963,6 +1121,7 @@ class DriverTests(unittest.TestCase):
         (root / "scripts").mkdir()
         shutil.copy2(DRIVER, root / "scripts/orchestrate.sh")
         shutil.copy2(VERIFY_HELPER, root / "scripts/orchestrate_verify.py")
+        shutil.copy2(CLAUDE_HELPER, root / "scripts/claude_review.py")
         (root / ".gitignore").write_text(".ai/\n")
         status_dir = root / "claude/skills/orchestrate/dashboard"
         status_dir.mkdir(parents=True)
@@ -1050,6 +1209,64 @@ exit 0
         os.symlink("/bin/bash", fakebin / "codex")
         return tmp, root, env
 
+    def install_fake_claude(self, env: dict[str, str], auth: str, first: str = "success") -> Path:
+        home_bin = Path(env["HOME"]) / ".local/bin"
+        home_bin.mkdir(parents=True)
+        cli = home_bin / "claude"
+        executable(cli, f'''#!/bin/bash
+case "${{1:-}}" in
+  --help)
+    echo '--safe-mode --permission-mode --tools --no-session-persistence --model --fallback-model --effort --output-format --max-budget-usd'
+    exit 0 ;;
+  --version)
+    echo '9.9.9 (Claude Code)'
+    exit 0 ;;
+esac
+if test "${{1:-}} ${{2:-}}" = 'auth status'; then
+  echo '{auth}'
+  exit 0
+fi
+printf '%s\n' "$*" >> "$HOME/claude-argv"
+count_file="$HOME/claude-count"
+n=0
+test ! -f "$count_file" || n=$(cat "$count_file")
+n=$((n + 1))
+echo "$n" > "$count_file"
+if test '{first}' = quota && test "$n" = 1; then
+  printf '%s\n' '{{"is_error":true,"api_error_status":429,"result":"Fable limit"}}'
+  exit 1
+fi
+if test '{first}' = fable_limit && test "$n" = 1; then
+  printf '%s\n' '{{"subtype":"success","is_error":true,"result":"You'"'"'ve reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.","modelUsage":{{}},"total_cost_usd":0}}'
+  exit 1
+fi
+case "$*" in
+  *'--model opus'*) model='claude-opus-4-8' ;;
+  *) model='claude-fable-5' ;;
+esac
+printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"total_cost_usd":0.25}}\n' "$model"
+''')
+        shadow = Path(env["PATH"].split(":", 1)[0]) / "claude"
+        executable(shadow, "#!/bin/sh\necho 'old PATH shadow' >&2\nexit 64\n")
+        return cli
+
+    def configure_claude_critique(self, root: Path, env: dict[str, str]) -> dict[str, str]:
+        store = Path(env["HOME"]) / "override-fixture.json"
+        configured = {**env, "ORCH_OVERRIDE_PATH": str(store)}
+        proc = run(
+            "python3", str(STATUS), "overrides", "set", "--role", "critique",
+            "--provider", "claude", "--model", "fable", "--ttl", "60", env=configured,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        (Path(env["HOME"]) / "codex-count").write_text("1")
+        return configured
+
+    def prepare_remote(self, tmp: tempfile.TemporaryDirectory, root: Path) -> None:
+        remote = Path(tmp.name) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+        subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+
     def test_dry_run_is_side_effect_free_and_ignores_dirty_tree(self):
         tmp, root, env = self.make_repo()
         self.addCleanup(tmp.cleanup)
@@ -1109,7 +1326,161 @@ exit 0
         self.assertEqual(set_proc.returncode, 0, set_proc.stderr)
         proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root, env=fixture_env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("claude -p --model claude-sonnet-4-6 --permission-mode plan --tools '' --no-session-persistence", proc.stdout)
+        self.assertIn("claude -p --safe-mode --model claude-sonnet-4-6 --permission-mode plan --tools '' --no-session-persistence", proc.stdout)
+        self.assertIn("--output-format json", proc.stdout)
+        self.assertIn("budget depends on authenticated billing mode", proc.stdout)
+
+    def test_subscription_claude_uses_absolute_native_binary_without_budget_cap(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        cli = self.install_fake_claude(
+            env,
+            '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}',
+        )
+        configured = self.configure_claude_critique(root, env)
+        self.prepare_remote(tmp, root)
+        proc = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+            env={**configured, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        argv = (Path(env["HOME"]) / "claude-argv").read_text()
+        self.assertIn("--safe-mode", argv)
+        self.assertIn("--model fable", argv)
+        self.assertIn("--fallback-model opus", argv)
+        self.assertIn("--effort max", argv)
+        self.assertNotIn("--max-budget-usd", argv)
+        self.assertEqual((Path(env["HOME"]) / "claude-count").read_text().strip(), "1")
+        self.assertEqual((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text(), "review ok\n")
+        self.assertNotIn("old PATH shadow", proc.stderr)
+        self.assertTrue(cli.is_absolute())
+
+    def test_metered_claude_keeps_budget_cap(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.install_fake_claude(
+            env,
+            '{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty","subscriptionType":null}',
+        )
+        configured = self.configure_claude_critique(root, env)
+        self.prepare_remote(tmp, root)
+        proc = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+            env={**configured, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("--max-budget-usd 2", (Path(env["HOME"]) / "claude-argv").read_text())
+
+    def test_api_key_environment_prevents_subscription_budget_bypass(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.install_fake_claude(
+            env,
+            '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}',
+        )
+        configured = self.configure_claude_critique(root, env)
+        self.prepare_remote(tmp, root)
+        proc = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+            env={
+                **configured,
+                "ANTHROPIC_API_KEY": "not-a-real-key",
+                "FAKE_CODEX_MODE": "success",
+                "FAKE_GH_PR": "1",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("--max-budget-usd 2", (Path(env["HOME"]) / "claude-argv").read_text())
+
+    def test_fable_quota_gets_one_direct_verified_opus_fallback(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.install_fake_claude(
+            env,
+            '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}',
+            first="quota",
+        )
+        configured = self.configure_claude_critique(root, env)
+        self.prepare_remote(tmp, root)
+        proc = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+            env={**configured, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        argv = (Path(env["HOME"]) / "claude-argv").read_text().splitlines()
+        self.assertEqual(len(argv), 2)
+        self.assertIn("--model fable", argv[0])
+        self.assertIn("--fallback-model opus", argv[0])
+        self.assertIn("--model opus", argv[1])
+        self.assertNotIn("--fallback-model", argv[1])
+        self.assertEqual((Path(env["HOME"]) / "claude-count").read_text().strip(), "2")
+        self.assertEqual((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text(), "review ok\n")
+
+    def test_real_fable_limit_envelope_gets_one_direct_verified_opus_fallback(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.install_fake_claude(
+            env,
+            '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}',
+            first="fable_limit",
+        )
+        configured = self.configure_claude_critique(root, env)
+        self.prepare_remote(tmp, root)
+        proc = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+            env={**configured, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        argv = (Path(env["HOME"]) / "claude-argv").read_text().splitlines()
+        self.assertEqual(len(argv), 2)
+        self.assertIn("--model fable", argv[0])
+        self.assertIn("--fallback-model opus", argv[0])
+        self.assertIn("--model opus", argv[1])
+        self.assertNotIn("--fallback-model", argv[1])
+        self.assertEqual((Path(env["HOME"]) / "claude-count").read_text().strip(), "2")
+        self.assertEqual((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text(), "review ok\n")
+
+    def test_shared_review_runner_owns_preflight_and_real_fable_limit_fallback(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        cli = self.install_fake_claude(
+            env,
+            '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}',
+            first="fable_limit",
+        )
+        packet = root / "review-packet.md"
+        output = root / "review.md"
+        packet.write_text("Review this bounded, secret-free fixture.\n")
+        preflight = run(
+            "python3", str(CLAUDE_HELPER), "preflight", "--claude-bin", str(cli), env=env,
+        )
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        preflight_data = json.loads(preflight.stdout)
+        self.assertEqual(preflight_data["authMode"], "subscription")
+        self.assertNotIn("--max-budget-usd", preflight_data["command"])
+        denied = run(
+            "python3", str(CLAUDE_HELPER), "run-review", "--claude-bin", str(cli),
+            "--input", str(packet), "--output", str(output), env=env,
+        )
+        self.assertEqual(denied.returncode, 2)
+        self.assertFalse(output.exists())
+        reviewed = run(
+            "python3", str(CODEX_CLAUDE_RUNNER), "run-review", "--claude-bin", str(cli),
+            "--input", str(packet), "--output", str(output), "--approved-outbound",
+            env=env,
+        )
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        metadata = json.loads(reviewed.stdout)
+        self.assertEqual(metadata["authMode"], "subscription")
+        self.assertTrue(metadata["fallbackUsed"])
+        self.assertEqual(metadata["resolvedModels"], ["claude-opus-4-8"])
+        self.assertEqual(output.read_text(), "review ok\n")
+        argv = (Path(env["HOME"]) / "claude-argv").read_text().splitlines()
+        self.assertEqual(len(argv), 2)
+        self.assertIn("--model fable", argv[0])
+        self.assertIn("--fallback-model opus", argv[0])
+        self.assertIn("--model opus", argv[1])
+        self.assertNotIn("--fallback-model", argv[1])
 
     def test_dry_run_defaults_implement_to_terra_ultra(self):
         tmp, root, env = self.make_repo()
@@ -1487,6 +1858,27 @@ exit 0
 
 class CodexParityTests(unittest.TestCase):
     @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_external_data_policy_rejection_is_terminal_for_the_external_lane(self):
+        skill = (CODEX_ORCHESTRATE / "SKILL.md").read_text()
+        preflight = (CODEX_ORCHESTRATE / "references" / "claude-cli-preflight.md").read_text()
+        plan_gate = (CODEX_ORCHESTRATE / "references" / "claude-plan-critique.md").read_text()
+        final_gate = (CODEX_ORCHESTRATE / "references" / "claude-final-review.md").read_text()
+        review_skill = (ROOT / "skills/codex/skills/claude-code-review/SKILL.md").read_text()
+        combined = "\n".join((skill, preflight, plan_gate, final_gate, review_skill))
+        for required in (
+            "EXTERNAL_REVIEW_BLOCKED:data-policy",
+            "zero Claude retries",
+            "Do not poll",
+            "orchestrate_plan_critic",
+            "orchestrate_reviewer",
+            "Do not relabel it as a Claude, authentication, Fable, or Opus failure",
+        ):
+            self.assertIn(required, combined)
+        self.assertIn("A. Accept the internal reviewer", preflight)
+        self.assertIn("B. Complete one local Claude baton", preflight)
+        self.assertIn("C. Pause or abort", preflight)
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
     def test_shared_status_reference_is_optional_unique_and_actor_explicit(self):
         path = CODEX_ORCHESTRATE / "references" / "shared-run-status.md"
         self.assertTrue(path.is_file())
@@ -1540,8 +1932,22 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn("orchestrate-status", pipeline)
         self.assertIn("codex sidecar: NOT_BOUND", pipeline)
         self.assertIn("never routes into `orchestrate`", pipeline)
+        self.assertIn("http://127.0.0.1:4600/", pipeline)
+        self.assertIn("--connect-timeout 1", pipeline)
+        self.assertIn("--max-time 2", pipeline)
+        self.assertNotIn("curl -s -o /dev/null -w '%{http_code}' localhost:4600", pipeline)
         self.assertIn("HANDOFF-CLAUDE-review-<topic>.md", handover)
         self.assertIn("exact implementation session ID", handover)
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_codex_orchestrate_closes_or_pauses_every_started_status_run(self):
+        skill = (CODEX_ORCHESTRATE / "SKILL.md").read_text()
+        status = (CODEX_ORCHESTRATE / "references" / "shared-run-status.md").read_text()
+        self.assertIn("Every started dashboard run must leave `running`", skill)
+        self.assertIn("A tool or agent timeout is not proof of terminal failure", status)
+        self.assertIn("Before returning control to the user", status)
+        for terminal in ("`pause`", "`handoff`", "`done`", "`fail`", "`cancel`"):
+            self.assertIn(terminal, status)
 
     def test_documented_handoff_metadata_satisfies_emitter_contract(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1600,6 +2006,7 @@ class SyncScriptTests(unittest.TestCase):
             self.assertEqual(scan_log.read_text().strip(), "scanned")
             self.assertTrue((target / "orchestrate/scripts/orchestrate.sh").exists())
             self.assertTrue((target / "orchestrate/scripts/orchestrate_verify.py").exists())
+            self.assertTrue((target / "orchestrate/scripts/claude_review.py").exists())
             self.assertTrue((target / "orchestrate/tests/test_orchestrate_hardening.py").exists())
             # Full replacement: the old layout and any stale public-only files are gone.
             self.assertFalse((target / "orchestrate/contract/stale.txt").exists())

@@ -23,3 +23,9 @@ SESSION_QUIET_SECS = int(os.environ.get("ORCH_SESSION_STALE_SECS", "900"))
 WATCHDOG_GRACE_SECS = int(
     os.environ.get("ORCH_WATCH_GRACE", str(int(os.environ.get("ORCH_STALL_KILL", "300")) + 120))
 )
+
+# A no-pid run (Codex goal / in-session) that has emitted nothing for this long — and has no
+# fresh sidecar lease — is treated as abandoned and auto-retired to a terminal state, so the
+# board self-cleans instead of accumulating zombie "quiet" cards forever. Well above
+# SESSION_QUIET_SECS: quiet is normal for minutes; abandoned is measured in hours.
+ABANDON_SECS = int(os.environ.get("ORCH_ABANDON_SECS", str(6 * 60 * 60)))

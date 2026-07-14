@@ -107,8 +107,11 @@ def _validate_model(provider: str, model: object) -> str:
         raise OverrideError("model must match [A-Za-z0-9._-]{1,64}")
     if provider == "codex" and not model.startswith("gpt-"):
         raise OverrideError("Codex models must start with gpt-")
-    if provider == "claude" and not re.fullmatch(r"claude-(?:opus|sonnet|haiku)-[A-Za-z0-9._-]{1,56}", model):
-        raise OverrideError("Claude models must be a claude-opus, claude-sonnet, or claude-haiku model")
+    if provider == "claude" and not (
+        model in {"fable", "opus"}
+        or re.fullmatch(r"claude-(?:opus|sonnet|haiku)-[A-Za-z0-9._-]{1,56}", model)
+    ):
+        raise OverrideError("Claude models must be fable, opus, or a claude-opus/sonnet/haiku model")
     return model
 
 

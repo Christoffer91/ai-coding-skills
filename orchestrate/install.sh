@@ -23,7 +23,7 @@ for command_name in codex gh git; do
 done
 
 [[ -f "$HERE/claude/skills/orchestrate/SKILL.md" && -d "$HERE/dashboard" && \
-   -f "$HERE/scripts/orchestrate.sh" ]] || {
+   -f "$HERE/scripts/orchestrate.sh" && -f "$HERE/scripts/claude_review.py" ]] || {
   echo "  ✗ incomplete orchestrate package" >&2
   exit 1
 }

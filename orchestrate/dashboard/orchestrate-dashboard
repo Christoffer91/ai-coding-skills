@@ -88,6 +88,8 @@ def load_runs():
             r["health"] = "failed"
         elif status == "rejected":
             r["health"] = "rejected"
+        elif status == "abandoned":
+            r["health"] = "abandoned"     # auto-retired by the watchdog: silent for hours, no lease
         elif status == "done":
             r["health"] = "done"
         elif r.get("steps") and all(s.get("state") == "done" for s in r["steps"]):
@@ -111,6 +113,7 @@ def load_runs():
         r["restartable"] = restart_reason is None
         r["restartReason"] = restart_reason
         r["hasConsole"] = console_log_for(r) is not None
+        r["stepLogs"] = steps_with_logs(r)   # step numbers whose own log can be opened
         out.append(r)
     return out
 
@@ -254,7 +257,7 @@ def cleanup_retained_runs(now=None):
                 run = json.load(fh)
         except Exception:
             continue
-        if run.get("status") not in ("done", "failed", "fail", "rejected"):
+        if run.get("status") not in ("done", "failed", "fail", "rejected", "abandoned"):
             continue
         if now - int(run.get("updatedAt", now)) <= RETENTION_SECS:
             continue
@@ -277,7 +280,36 @@ def console_log_for(record):
     return logs[0] if logs else None
 
 
-def resolve_console_log(rid):
+# Which artifact each pipeline step's output lands in (driver convention). Lets you click a
+# step 1–7 on a card and read exactly what that agent produced. steps[n-1]["log"] overrides this.
+STEP_ARTIFACTS = {
+    2: ("critique.md",),                       # Codex critiques the plan
+    3: ("implementation.md", "verify-test.log"),  # Codex implements + verify gate
+    6: ("implementation.md",),                 # Codex applies review fixes (resumed session)
+}
+
+
+def step_log_for(record, n):
+    """Path to step n's own log/artifact, or None. Prefers an explicit steps[n-1].log,
+    then the driver's artifact convention; never falls back to a different step."""
+    steps = record.get("steps") or []
+    if 1 <= n <= len(steps):
+        rec = steps[n - 1].get("log")
+        if rec and os.path.isfile(rec):
+            return rec
+    art = os.path.join(BASE, "artifacts", os.path.basename(record.get("id") or ""))
+    for name in STEP_ARTIFACTS.get(n, ()):
+        candidate = os.path.join(art, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def steps_with_logs(record):
+    return [n for n in range(1, 8) if step_log_for(record, n)]
+
+
+def resolve_console_log(rid, step=None):
     if not rid:
         return None
     try:
@@ -285,6 +317,8 @@ def resolve_console_log(rid):
             r = json.load(fh)
     except Exception:
         return None
+    if step is not None:
+        return step_log_for(r, step)
     return console_log_for(r)
 
 
@@ -322,9 +356,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             rid = os.path.basename((q.get("id") or [""])[0])
             tail = min(int((q.get("tail") or ["65536"])[0]), 512 * 1024)
-            path = resolve_console_log(rid)
+            step_raw = (q.get("step") or [""])[0]
+            step = int(step_raw) if step_raw.isdigit() and 1 <= int(step_raw) <= 7 else None
+            path = resolve_console_log(rid, step)
             if not path:
-                return self._send(404, json.dumps({"error": "no console log found for this run"}))
+                msg = f"no log recorded for step {step}" if step else "no console log found for this run"
+                return self._send(404, json.dumps({"error": msg}))
             try:
                 st = os.stat(path)
                 with open(path, "rb") as fh:

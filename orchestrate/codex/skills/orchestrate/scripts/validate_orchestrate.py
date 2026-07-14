@@ -101,6 +101,22 @@ def main() -> int:
             errors.append("Claude critique reference must not mention a dangerous permission bypass")
         if "intended to resolve to Opus 4.8" in claude_text:
             errors.append("Claude critique reference must not infer Opus 4.8 from an alias")
+    claude_preflight = skill_dir / "references/claude-cli-preflight.md"
+    if not claude_preflight.is_file():
+        errors.append(f"missing Claude CLI preflight reference: {claude_preflight}")
+    else:
+        preflight_text = claude_preflight.read_text(encoding="utf-8")
+        for required in (
+            "same absolute path",
+            "auth status --json",
+            "omit `--max-budget-usd`",
+            "monthly Agent SDK allowance",
+            "exactly once",
+            "modelUsage",
+            "estimated model cost",
+        ):
+            if required not in preflight_text:
+                errors.append(f"Claude CLI preflight reference missing: {required}")
 
     writable = [name for name, (_, _, sandbox, _) in EXPECTED.items() if sandbox == "workspace-write"]
     if writable != ["orchestrate_executor"]:
@@ -154,6 +170,22 @@ def main() -> int:
             or security.get("external_approval_required") is not True
         ):
             errors.append("DEEP security scenario must use deep evidence, risk, and external approval gates")
+        if (
+            security.get("claude_absolute_binary_required") is not True
+            or security.get("claude_auth_preflight_required") is not True
+            or security.get("subscription_default_budget_flag") != "omitted"
+            or security.get("metered_default_budget_usd") != 2
+            or security.get("direct_opus_fallback_limit") != 1
+            or security.get("direct_opus_fallback_trigger") != "strict-fable-unavailable-only"
+            or security.get("shared_claude_runner_required") is not True
+            or security.get("result_model_metadata_required") is not True
+            or security.get("data_policy_rejection_state") != "EXTERNAL_REVIEW_BLOCKED:data-policy"
+            or security.get("data_policy_retry_limit") != 0
+            or security.get("optional_external_fallback") != "internal-reviewer"
+            or security.get("required_external_gate") != "single-human-decision"
+            or security.get("baton_polling") is not False
+        ):
+            errors.append("external Claude scenario must enforce binary, auth, budget, fallback, metadata, and data-policy bounds")
         resume = by_id["approved-plan-resume"]
         if (
             resume.get("planner_spawned") is not False

@@ -136,6 +136,21 @@ orch_emit step --id "$RUN_ID" --n 3 --state done --actor "Terra · medium"
 
 For recoverable `needs-rework`, `ESCALATE/BLOCKED`, or no-progress stops, keep the run non-terminal: emit the current step as `pending` with a short reason and then `pause`. Reserve `fail --id "$RUN_ID"` for an actual terminal failure. On successful local completion use `done --id "$RUN_ID"`; a `PR_READY` review handoff uses the handoff sequence below instead.
 
+## Timeouts and lifecycle closure
+
+A tool or agent timeout is not proof of terminal failure and must not leave a run in `running`.
+Capture the bounded failure evidence, diagnose it, and continue only when the next legal action can
+start immediately. Otherwise update the resume command, return the active step to `pending` with a
+short factual note, and emit `pause`. Do not relabel a timeout as progress or keep retrying merely to
+refresh the dashboard.
+
+Before returning control to the user, close every successfully started status run with exactly one
+honest lifecycle outcome: `pause` for resumable blocked or timed-out work, `handoff` for a registered
+review baton, `done` for completed work, `fail` for terminal failure, or `cancel` for an explicit
+abort/rejection. A final response is not a lifecycle outcome; never leave the record in `running`,
+`review`, or a partially active step after the work has stopped. Emitter failure remains non-fatal to
+the underlying task, but record `shared status: EMIT_FAILED` in the local report.
+
 ## Best-effort token metrics
 
 When the conductor can see an integer token count reported for a managed Codex

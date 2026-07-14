@@ -186,6 +186,8 @@
   .row .stn.k-neutral.done{background:var(--done)}
   .row .stn.fail{background:var(--fail)}
   .row .name{font-weight:630;font-size:14.5px}
+  .steplog{margin-left:10px;font-size:11.5px;font-weight:600;font-family:var(--mono);color:var(--faint);text-decoration:none;white-space:nowrap}
+  .steplog:hover{color:var(--ink)}
   .row .actor{font-family:var(--mono);font-size:11.5px;font-weight:620;margin-left:6px}
   .row .actor.claude{color:var(--claude)} .row .actor.codex{color:var(--codex)} .row .actor.neutral{color:var(--faint)}
   .row .note{color:var(--muted);font-size:13.5px;margin-top:2px;overflow-wrap:anywhere}
@@ -306,6 +308,7 @@
   .hrow:focus-visible{outline-offset:-3px}
   .hrow .hd{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
   .hrow .hd.done{background:var(--done)} .hrow .hd.failed{background:var(--fail)} .hrow .hd.rejected{background:var(--border-strong)}
+  .hrow .hd.abandoned{background:var(--faint)}
   .hrow .ht{font-weight:640;font-size:14.5px;flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hrow .ht small{font-family:var(--mono);font-weight:500;font-size:12px;color:var(--faint);margin-left:9px}
   .hrow .hmeta{font-family:var(--mono);font-size:12.5px;color:var(--faint);white-space:nowrap;flex:0 0 auto}
@@ -388,7 +391,7 @@ function ago(sec){const s=Math.max(0,Math.round(Date.now()/1000-sec));if(s<60)re
 function dur(sec){const m=Math.max(0,Math.round((Date.now()/1000-sec)/60));if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 function span(a,b){const s=Math.max(0,Math.round((b??Date.now()/1000)-a));if(s<60)return s+"s";const m=Math.round(s/60);if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 const curStep=r=>(r.steps||[]).find(s=>s.state==="active")||(r.steps||[]).slice().reverse().find(s=>s.state==="done")||(r.steps||[])[0];
-const isTerminal=r=>["done","failed","fail","rejected"].includes(r.status);
+const isTerminal=r=>["done","failed","fail","rejected","abandoned"].includes(r.status);
 const isGateOpen=r=>r.gate&&!isAns(r);
 
 function healthOf(r){
@@ -399,6 +402,7 @@ function stateOf(r){ // one visual state per card: done|failed|rejected|paused|n
   if(r.status==="done")return"done";
   if(r.status==="failed"||r.status==="fail")return"failed";
   if(r.status==="rejected")return"rejected";
+  if(r.status==="abandoned")return"abandoned";
   if(r.status==="paused")return"paused";
   if(isGateOpen(r))return"needs";
   if(r.status==="handoff"||healthOf(r)==="handoff")return"handoff";
@@ -471,14 +475,19 @@ function detail(r){
   if(r.resumeCommand){
     h+=`<div class="resume-command"><span class="lbl">resume command</span><code>${esc(r.resumeCommand)}</code></div>`;
   }
+  const stepLogs=r.stepLogs||[];
   (r.steps||[]).forEach(s=>{
     const k=kindOf(s.actor);
     let t="";
     if(s.state==="active"&&s.startedAt) t=`<span class="tchip on ${k==="claude"?"claude":""}">${span(s.startedAt)}…${tokBit(s)}</span>`;
     else if(s.state==="done"&&s.startedAt&&s.endedAt) t=`<span class="tchip">${span(s.startedAt,s.endedAt)}${tokBit(s)}</span>`;
     else if(s.state==="fail") t=`<span class="tchip" style="color:var(--fail)">failed</span>`;
+    // Clickable when this step has its own captured log — opens that agent's output in the terminal view.
+    const log=stepLogs.includes(s.n)
+      ? `<a class="steplog" href="/console?id=${encodeURIComponent(r.id)}&step=${s.n}" target="_blank" rel="noopener" data-stop title="Open step ${s.n} log (${esc(s.actor||'')})">⌗ log ↗</a>`
+      : "";
     h+=`<div class="row"><span class="idx">${s.n}</span><span class="stn k-${k} ${s.state}"></span>
-      <div style="min-width:0"><div class="name">${esc(s.name)}<span class="actor ${k}">${esc(s.actor)}</span></div>
+      <div style="min-width:0"><div class="name">${esc(s.name)}<span class="actor ${k}">${esc(s.actor)}</span>${log}</div>
       ${s.note?`<div class="note">${esc(s.note)}</div>`:''}</div>${t}</div>`;
   });
   return h+'</div>';
@@ -511,7 +520,7 @@ function card(r,compact){
     const command=(r.review&&r.review.command)||`/orchestrate review ${r.topic}`;
     actions=`<div class="actions"><button class="btn sm" data-copy-review="${esc(command)}">⧉ copy review command</button></div>`;
   } else actions=recoveryAction(r,st);
-  const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",paused:"var(--faint)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",live:"var(--live)"}[st];
+  const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",paused:"var(--faint)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",live:"var(--live)"}[st];
   const slim=compact&&!open[r.id];
   const statsBlock=slim
     ?`<div class="cline"><span><b>${r.step||0}</b>/7</span><span>${r.startedAt?dur(r.startedAt):"—"}</span><span>upd ${r.updatedAt?ago(r.updatedAt):"—"}</span>${m.tests?`<span>${esc(m.tests)}</span>`:""}${r.pr?prBit(r):""}</div>`
@@ -566,7 +575,7 @@ function hrow(r){
   const total=r.startedAt?span(r.startedAt,r.updatedAt||undefined):"—";
   const when=r.updatedAt?ago(r.updatedAt):"";
   const pr=r.pr?`<a class="pr merged" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener" data-stop>#${esc(r.pr.number)} ↗</a>`:"";
-  const pill=st==="done"?'<span class="pill done">merged ✓</span>':st==="failed"?'<span class="pill failed">failed</span>':'<span class="pill rejected">rejected</span>';
+  const pill=st==="done"?'<span class="pill done">merged ✓</span>':st==="failed"?'<span class="pill failed">failed</span>':st==="abandoned"?'<span class="pill quiet">◦ abandoned</span>':'<span class="pill rejected">rejected</span>';
   return `<div class="hrow ${open[r.id]?'open':''}" data-toggle="${esc(r.id)}" tabindex="0" role="button" aria-expanded="${!!open[r.id]}">
       <span class="hd ${st}"></span>
       <span class="ht">${esc(r.title)}<small>${esc(r.repo)}</small></span>
@@ -581,7 +590,8 @@ function render(){
   const cnt=s=>states.filter(x=>x===s).length;
   const chips=[];
   if(cnt("needs"))chips.push(`<span class="schip needs"><span class="n">${cnt("needs")}</span> need you</span>`);
-  if(cnt("dead")+cnt("failed"))chips.push(`<span class="schip dead"><span class="n">${cnt("dead")+cnt("failed")}</span> not running</span>`);
+  if(cnt("dead"))chips.push(`<span class="schip dead"><span class="n">${cnt("dead")}</span> not running</span>`);
+  if(cnt("failed"))chips.push(`<span class="schip dead"><span class="n">${cnt("failed")}</span> failed</span>`);
   if(cnt("stale"))chips.push(`<span class="schip stale"><span class="n">${cnt("stale")}</span> stalled</span>`);
   if(cnt("quiet"))chips.push(`<span class="schip quiet"><span class="n">${cnt("quiet")}</span> quiet</span>`);
   if(cnt("live"))chips.push(`<span class="schip liv"><span class="d"></span><span class="n">${cnt("live")}</span> live</span>`);
@@ -627,10 +637,11 @@ function render(){
 /* tab title + favicon reflect overall state (glanceable from another tab) */
 function updateChrome(states){
   const cnt=s=>states.filter(x=>x===s).length;
-  const needs=cnt("needs"),bad=cnt("dead")+cnt("failed"),stale=cnt("stale"),live=cnt("live");
+  const needs=cnt("needs"),dead=cnt("dead"),failed=cnt("failed"),bad=dead+failed,stale=cnt("stale"),live=cnt("live");
   const bits=[];
   if(needs)bits.push("⚠ "+needs+" needs you");
-  if(bad)bits.push(bad+" down");
+  if(dead)bits.push(dead+" not running");
+  if(failed)bits.push(failed+" failed");
   if(stale)bits.push(stale+" stalled");
   if(live)bits.push(live+" live");
   document.title=(bits.length?bits.join(" · ")+" — ":"")+"orchestrate";

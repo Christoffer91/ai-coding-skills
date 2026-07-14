@@ -16,11 +16,16 @@ import os, glob, json, time, signal, subprocess, argparse, sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # resolve ~/.local/bin symlink
 import thresholds
+try:
+    import liveness
+except Exception:  # liveness is optional; abandon check just skips the lease guard without it
+    liveness = None
 
 HOME = os.path.expanduser("~")
 BASE = os.path.join(HOME, ".orchestrate")
 RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
+LIVENESS_DIR = os.path.join(BASE, "liveness")
 LOG  = os.path.join(BASE, "watchdog.log")
 
 
@@ -126,10 +131,22 @@ def sweep(grace, handled):
         alive = pid_alive(r.get("pid"))
         dead = alive is False
         stalled = age > grace
-        # A no-pid model-driven run (Codex goal / in-session) that emits only at transitions has no
-        # worker to reap and no evidence of a hang — its silence is "quiet", not "needsRestart".
-        # Only act when there is a real worker: a live/dead pid or a recorded reapable worker.
         has_worker = bool(r.get("pid")) or bool((r.get("worker") or {}).get("pid"))
+        # Abandoned no-pid run: emitted nothing for hours and has no fresh sidecar lease.
+        # Auto-retire it to a terminal state so the board self-cleans (approved auto-cleanup).
+        if not has_worker and age > thresholds.ABANDON_SECS:
+            lease_at = liveness.matching_lease_activity(r, LIVENESS_DIR) if liveness else None
+            if lease_at is None or (now - lease_at) > thresholds.ABANDON_SECS:
+                if handled.get(r["id"]) != r.get("updatedAt"):
+                    r["status"] = "abandoned"
+                    r["watchdog"] = {"at": now, "reason": "abandoned", "silentFor": age}
+                    save(r)
+                    handled[r["id"]] = r.get("updatedAt")
+                    logline(f"{r['id']}: no emit for {age}s and no live lease — auto-retired (abandoned)")
+                continue
+        # A no-pid model-driven run that emits only at transitions has no worker to reap and no
+        # evidence of a hang — its silence is "quiet", not "needsRestart". Only act when there is a
+        # real worker: a live/dead pid or a recorded reapable worker.
         if not (dead or (stalled and has_worker)):
             continue
         if handled.get(r["id"]) == r.get("updatedAt"):

@@ -33,7 +33,11 @@
 <script>
 const q=new URLSearchParams(location.search);
 const ID=q.get("id")||"";
-document.getElementById("run").textContent=ID||"(no ?id= given)";
+const STEP=q.get("step")||"";
+const STEP_NAMES={1:"Plan",2:"Critique plan",3:"Implement",4:"Open PR",5:"Review PR",6:"Apply edits",7:"Deploy"};
+const stepLbl=STEP?` · step ${STEP} ${STEP_NAMES[STEP]||""}`.trimEnd():"";
+document.getElementById("run").textContent=(ID||"(no ?id= given)")+stepLbl;
+if(STEP)document.querySelector("header b").innerHTML='orchestrate<span class="t">▮</span> step log';
 let mtime=0, follow=true, lastLen=-1;
 const out=document.getElementById("out"), pin=document.getElementById("pin");
 pin.onclick=()=>{follow=!follow;pin.classList.toggle("on",follow);if(follow)out.scrollTop=out.scrollHeight;};
@@ -48,7 +52,7 @@ function tickAge(){const el=document.getElementById("age");if(!mtime)return;
 async function load(){
   if(!ID){out.textContent="Missing ?id=<run-id> — open from /watch.";return;}
   try{
-    const res=await fetch(`/api/console?id=${encodeURIComponent(ID)}&tail=131072`,{cache:"no-store"});
+    const res=await fetch(`/api/console?id=${encodeURIComponent(ID)}${STEP?`&step=${encodeURIComponent(STEP)}`:""}&tail=131072`,{cache:"no-store"});
     const j=await res.json();
     if(j.error){out.textContent=j.error;return;}
     mtime=j.mtime;

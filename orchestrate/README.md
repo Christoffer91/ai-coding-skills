@@ -90,6 +90,7 @@ claude/skills/orchestrate/references/    deploy safety, loop mechanics, Desktop 
 codex/skills/orchestrate/                the Codex CLI side: skill, references, validator
 scripts/orchestrate.sh                   headless Codex-leg driver
 scripts/orchestrate_verify.py            safe TOML/argv verifier and test-delta classifier
+scripts/claude_review.py                 subscription-aware Claude auth/result validator
 dashboard/orchestrate-dashboard          localhost status server/UI
 dashboard/orchestrate-status             state emitter, gates, notifier hook
 dashboard/orchestrate-codex-sidecar      optional isolated Codex liveness lease writer

@@ -17,6 +17,8 @@
 #   ORCH_GATE_TIMEOUT seconds to wait for a gate; 0 waits forever (default 0)
 #   ORCH_VERIFY_TIMEOUT seconds allowed per configured verify command (default 900)
 #   ORCH_OVERRIDE_PATH fixture override store for deterministic dry-runs/tests
+#   ORCH_CLAUDE_BIN   absolute Claude Code CLI path; otherwise prefer ~/.local/bin/claude
+#   ORCH_CLAUDE_MAX_BUDGET_USD optional subscription cap; metered/API auth defaults to 2
 #   ORCH_DRYRUN=1     print the command plan without writes, auth, fetch, or emit
 set -Eeuo pipefail
 
@@ -175,7 +177,9 @@ print_step_command() { # <role> <sandbox> <effort>
   local role="$1" sandbox="$2" effort="$3"
   resolve_override "$role" "$effort"
   if [[ "$OVERRIDE_PROVIDER" == "claude" ]]; then
-    printf '+ claude -p --model %q --permission-mode plan --tools %q --no-session-persistence < <critique-prompt> > <critique>\n' "$OVERRIDE_MODEL" ""
+    printf '+ claude -p --safe-mode --model %q --permission-mode plan --tools %q --no-session-persistence --effort max --output-format json' "$OVERRIDE_MODEL" ""
+    [[ "$OVERRIDE_MODEL" == "fable" ]] && printf ' --fallback-model opus'
+    printf '  # budget depends on authenticated billing mode\n'
   else
     printf '+ codex exec -s %q -c approval_policy=never' "$sandbox"
     if [[ -n "$OVERRIDE_MODEL" ]]; then
@@ -408,6 +412,151 @@ capture_tokens() { # <log> <role>
   return 0
 }
 
+CLAUDE_BIN=""
+resolve_claude_bin() {
+  [[ -n "$CLAUDE_BIN" ]] && return 0
+  local explicit="${ORCH_CLAUDE_BIN:-}" candidate resolved help flag seen="" supported
+  local -a candidates=()
+  if [[ -n "$explicit" ]]; then
+    [[ "$explicit" == /* ]] || die "ORCH_CLAUDE_BIN must be an absolute path"
+    candidates+=("$explicit")
+  else
+    candidates+=("$HOME/.local/bin/claude")
+    candidate="$(command -v claude 2>/dev/null || true)"
+    [[ -z "$candidate" ]] || candidates+=("$candidate")
+    candidates+=("$HOME/bin/claude" "/opt/homebrew/bin/claude" "/usr/local/bin/claude")
+  fi
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" ]] || continue
+    resolved="$(cd "$(dirname "$candidate")" && pwd -P)/$(basename "$candidate")"
+    [[ "|$seen|" != *"|$resolved|"* ]] || continue
+    seen="${seen:+$seen|}$resolved"
+    help="$("$resolved" --help 2>/dev/null || true)"
+    [[ -n "$help" ]] || continue
+    supported=1
+    for flag in --safe-mode --permission-mode --tools --no-session-persistence --model --fallback-model --effort --output-format --max-budget-usd; do
+      if [[ "$help" != *"$flag"* ]]; then
+        supported=0
+        break
+      fi
+    done
+    [[ "$supported" == "1" ]] || continue
+    CLAUDE_BIN="$resolved"
+    return 0
+  done
+  die "no Claude Code CLI supports the required safe review flags"
+}
+
+claude_auth_mode() {
+  local helper mode
+  helper="$(dirname "$SELF")/claude_review.py"
+  [[ -f "$helper" ]] || die "Claude review helper not found: $helper"
+  if ! mode="$("$CLAUDE_BIN" auth status --json | "$VERIFY_PYTHON" "$helper" auth-mode)"; then
+    return 1
+  fi
+  [[ "$mode" == "subscription" || "$mode" == "metered" ]] || return 1
+  printf '%s\n' "$mode"
+}
+
+effective_claude_auth_mode() {
+  local mode
+  mode="$(claude_auth_mode)" || return 1
+  if [[ "$mode" == "subscription" && (
+    -n "${ANTHROPIC_API_KEY:-}" || -n "${ANTHROPIC_AUTH_TOKEN:-}" ||
+    -n "${CLAUDE_CODE_USE_BEDROCK:-}" || -n "${CLAUDE_CODE_USE_VERTEX:-}" ||
+    -n "${CLAUDE_CODE_USE_FOUNDRY:-}"
+  ) ]]; then
+    mode="metered"
+  fi
+  printf '%s\n' "$mode"
+}
+
+run_claude_once() { # <prompt> <output> <model> <cli-fallback:0|1> <auth-mode> <step> <direct-fallback:0|1>
+  local prompt_file="$1" out_file="$2" model="$3" cli_fallback="$4" auth_mode="$5" step_n="$6" direct_fallback="$7"
+  local helper result_json log cpid worker_start worker_pgid size last_size=-1 idle=0
+  local kill_after="${ORCH_STALL_KILL:-300}" hung=0 rc=0 parse_rc=0 metadata="" budget="${ORCH_CLAUDE_MAX_BUDGET_USD:-}"
+  local -a cmd parse
+  helper="$(dirname "$SELF")/claude_review.py"
+  cmd=("$CLAUDE_BIN" -p --safe-mode --model "$model" --permission-mode plan --tools ""
+    --no-session-persistence --effort max --output-format json)
+  [[ "$cli_fallback" == "1" ]] && cmd+=(--fallback-model opus)
+  [[ "$auth_mode" == "subscription" ]] || budget="${budget:-2}"
+  if [[ -n "$budget" ]]; then
+    "$VERIFY_PYTHON" -c 'from decimal import Decimal; import sys; assert Decimal(sys.argv[1]) > 0' "$budget" 2>/dev/null || \
+      die "ORCH_CLAUDE_MAX_BUDGET_USD must be a positive number"
+    cmd+=(--max-budget-usd "$budget")
+  fi
+  result_json="$(mktemp -t orch-claude-result-XXXX).json"
+  log="$(mktemp -t orch-claude-log-XXXX).log"
+  [[ -n "$step_n" ]] && emit metric --id "$RUN_ID" --key log --value "$log"
+  "${cmd[@]}" < "$prompt_file" >"$result_json" 2>"$log" &
+  cpid=$!
+  worker_start="$(proc_start "$cpid" || true)"
+  worker_pgid="$(proc_pgid "$cpid" || true)"
+  if [[ -n "$worker_start" && "$worker_pgid" =~ ^[0-9]+$ ]]; then
+    emit worker --id "$RUN_ID" --pid "$cpid" --pid-start "$worker_start" --pgid "$worker_pgid" --cwd "$(pwd -P)"
+  fi
+  while kill -0 "$cpid" 2>/dev/null; do
+    sleep 1
+    size="$(( $(wc -c <"$log" 2>/dev/null || echo 0) + $(wc -c <"$result_json" 2>/dev/null || echo 0) ))"
+    if [[ "$size" != "$last_size" ]]; then
+      last_size="$size"; idle=0; emit heartbeat --id "$RUN_ID" --pid "$$"
+    else
+      idle=$((idle + 1))
+    fi
+    if (( idle >= kill_after )); then
+      hung=1
+      pkill -9 -P "$cpid" 2>/dev/null || true
+      kill -9 "$cpid" 2>/dev/null || true
+      wait "$cpid" 2>/dev/null || true
+      break
+    fi
+  done
+  if [[ "$hung" == "1" ]]; then
+    rm -f "$result_json"
+    echo "  Claude produced no output for ${kill_after}s (log: $log)" >&2
+    return 124
+  fi
+  if wait "$cpid"; then rc=0; else rc=$?; fi
+  parse=("$VERIFY_PYTHON" "$helper" extract-result --input "$result_json" --output "$out_file" --require-model-metadata)
+  [[ "$cli_fallback" == "1" ]] && parse+=(--retry-on-unavailable)
+  [[ "$direct_fallback" == "1" ]] && parse+=(--require-model opus)
+  if metadata="$("${parse[@]}" 2>>"$log")"; then
+    parse_rc=0
+  else
+    parse_rc=$?
+  fi
+  rm -f "$result_json"
+  if [[ "$parse_rc" -eq 0 ]]; then
+    emit metric --id "$RUN_ID" --key claude.result --value "$metadata"
+    return 0
+  fi
+  [[ "$parse_rc" -eq 10 ]] && return 10
+  echo "  Claude review failed (cli=$rc, contract=$parse_rc, log: $log)" >&2
+  return 1
+}
+
+run_claude_review() { # <prompt> <output> <model> <step>
+  local prompt_file="$1" out_file="$2" model="$3" step_n="$4" auth_mode fallback_auth rc cli_fallback=0
+  resolve_claude_bin
+  auth_mode="$(effective_claude_auth_mode)" || die "Claude authentication preflight failed"
+  emit metric --id "$RUN_ID" --key claude.auth --value "$auth_mode"
+  [[ "$model" == "fable" ]] && cli_fallback=1
+  if run_claude_once "$prompt_file" "$out_file" "$model" "$cli_fallback" "$auth_mode" "$step_n" 0; then
+    return 0
+  else
+    rc=$?
+  fi
+  if [[ "$rc" -eq 10 && "$model" == "fable" ]]; then
+    fallback_auth="$(effective_claude_auth_mode)" || die "Claude fallback authentication preflight failed"
+    [[ "$fallback_auth" == "$auth_mode" ]] || die "Claude authentication mode changed before fallback"
+    emit metric --id "$RUN_ID" --key claude.fallback --value "fable-unavailable:direct-opus"
+    run_claude_once "$prompt_file" "$out_file" opus 0 "$auth_mode" "$step_n" 1
+    return
+  fi
+  return "$rc"
+}
+
 codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
   local prompt_file="$1" out_file="$2" sandbox="$3" effort="$4" step_n="$5" role="$6"
   local attempt=1 max="${ORCH_MAX_RETRY:-2}" kill_after="${ORCH_STALL_KILL:-300}"
@@ -422,33 +571,25 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
   emit "${execution[@]}"
   emit metric --id "$RUN_ID" --key "model.$role" \
     --value "$OVERRIDE_PROVIDER:${OVERRIDE_MODEL:-configured}:${OVERRIDE_EFFORT:-configured}"
-  local use_claude=0
   local -a cmd=()
   if [[ "$OVERRIDE_PROVIDER" == "claude" ]]; then
     [[ "$role" == "critique" && -n "$OVERRIDE_MODEL" ]] || die "invalid Claude override for $role"
-    command -v claude >/dev/null || die "Claude critique override requested but claude CLI is unavailable (fail closed)"
-    # These flags disable every tool and session persistence; no Codex fallback is used.
-    cmd=(claude -p --model "$OVERRIDE_MODEL" --permission-mode plan --tools "" --no-session-persistence)
-    use_claude=1
-  else
-    cmd=(codex exec -s "$sandbox" -c approval_policy=never)
-    if [[ -n "$OVERRIDE_MODEL" ]]; then
-      cmd+=(-m "$OVERRIDE_MODEL")
-    elif [[ "$OVERRIDE_SOURCE" != "override" && "$role" == "implement" ]]; then
-      cmd+=(-m "$EXEC_MODEL")
-    fi
-    [[ -n "$OVERRIDE_EFFORT" ]] && cmd+=(-c "model_reasoning_effort=$OVERRIDE_EFFORT")
-    cmd+=(-o "$out_file" -)
+    run_claude_review "$prompt_file" "$out_file" "$OVERRIDE_MODEL" "$step_n"
+    return
   fi
+  cmd=(codex exec -s "$sandbox" -c approval_policy=never)
+  if [[ -n "$OVERRIDE_MODEL" ]]; then
+    cmd+=(-m "$OVERRIDE_MODEL")
+  elif [[ "$OVERRIDE_SOURCE" != "override" && "$role" == "implement" ]]; then
+    cmd+=(-m "$EXEC_MODEL")
+  fi
+  [[ -n "$OVERRIDE_EFFORT" ]] && cmd+=(-c "model_reasoning_effort=$OVERRIDE_EFFORT")
+  cmd+=(-o "$out_file" -)
   while :; do
     local log cpid last_size=-1 idle=0 hung=0 rc=0 size worker_start worker_pgid last_act_t=0 act
     log="$(mktemp -t orch-clog-XXXX).log"
     [[ -n "$step_n" ]] && emit metric --id "$RUN_ID" --key log --value "$log"
-    if [[ "$use_claude" == "1" ]]; then
-      "${cmd[@]}" < "$prompt_file" >"$out_file" 2>"$log" &
-    else
-      "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
-    fi
+    "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
     cpid=$!
     worker_start="$(proc_start "$cpid" || true)"
     worker_pgid="$(proc_pgid "$cpid" || true)"
@@ -479,12 +620,12 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
     done
     if [[ "$hung" == "0" ]]; then
       if wait "$cpid"; then rc=0; else rc=$?; fi
-      [[ "$use_claude" == "0" ]] && capture_session "$log"
+      capture_session "$log"
       if [[ "$rc" -eq 0 ]]; then
         capture_tokens "$log" "$role"
         return 0
       fi
-      echo "  $([[ "$use_claude" == "1" ]] && echo Claude || echo Codex) failed (log: $log)" >&2
+      echo "  Codex failed (log: $log)" >&2
       return "$rc"
     fi
     if (( attempt > max )); then

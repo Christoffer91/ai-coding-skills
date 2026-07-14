@@ -61,6 +61,7 @@ function stateOf(r){
   const st=r.status;
   if(st==="done")return["done","done","✓"];
   if(st==="failed"||st==="fail")return["failed","failed","✗"];
+  if(st==="abandoned")return["quiet","abandoned","◦"];
   if(r.gate&&!r.answered)return["needs","NEEDS YOU","◆"];
   if(st==="handoff"||r.health==="handoff")return["handoff","with Claude","⇄"];
   if(r.health==="exited")return["dead","not running","■"];
@@ -73,14 +74,14 @@ const kindOf=a=>/claude|fable|opus/i.test(a||"")?"claude":/gpt|codex|sol|terra/i
 function curStep(r){return (r.steps||[]).find(s=>s.state==="active")||(r.steps||[]).slice(-1)[0];}
 function render(){
   const el=document.getElementById("runs");
-  const rows=RUNS.filter(r=>SHOW_ALL||!(["done","failed","fail"].includes(r.status)&&(now()-(r.updatedAt||0))>86400));
-  rows.sort((a,b)=>(["done","failed","fail"].includes(a.status)?1:0)-(["done","failed","fail"].includes(b.status)?1:0)||(b.updatedAt||0)-(a.updatedAt||0));
+  const rows=RUNS.filter(r=>SHOW_ALL||!(["done","failed","fail","rejected","abandoned"].includes(r.status)&&(now()-(r.updatedAt||0))>86400));
+  rows.sort((a,b)=>(["done","failed","fail","rejected","abandoned"].includes(a.status)?1:0)-(["done","failed","fail","rejected","abandoned"].includes(b.status)?1:0)||(b.updatedAt||0)-(a.updatedAt||0));
   if(!rows.length){el.innerHTML='<div class="empty">no runs — start one with /orchestrate &lt;topic&gt;</div>';return;}
   el.innerHTML=rows.map(r=>{
     const [cls,label,icon]=stateOf(r);
     const a=now()-(r.updatedAt||now());
     const changed=`<span class="${a>STALE?"cold":"hot"}">${age(a)} ago</span>`;
-    const active=!["done","failed","fail"].includes(r.status);
+    const active=!["done","failed","fail","rejected","abandoned"].includes(r.status);
     let l2="";
     const s=curStep(r);
     if(s&&active){

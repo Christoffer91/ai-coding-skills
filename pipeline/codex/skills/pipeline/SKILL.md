@@ -193,12 +193,15 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
      calls `heartbeat`, never changes run JSON/steps/status, and never infers completion. The status
      record retains only opaque bindings, never the rollout path, raw turn id, transcript text, or tool
      output. See `orchestrate/references/shared-run-status.md` for lifecycle and launch details.
-   - **Server:** if `$HOME/.claude/skills/orchestrate/dashboard/` exists and
-     `curl -s -o /dev/null -w '%{http_code}' localhost:4600` isn't `200`, start it in the background
-     from its real path: `nohup "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-dashboard" >/tmp/orch-dashboard.log 2>&1 &`.
+   - **Server:** probe only the explicit loopback address and never let a wedged dashboard block Codex.
+     When `$HOME/.claude/skills/orchestrate/dashboard/` exists, run
+     `curl --fail --silent --connect-timeout 1 --max-time 2 http://127.0.0.1:4600/ >/dev/null 2>&1`.
+     If `curl` is unavailable or that bounded probe fails, start the server in the background from its
+     real path: `nohup "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-dashboard" >/tmp/orch-dashboard.log 2>&1 &`.
    - **Emit** per `orchestrate/references/shared-run-status.md`: a `start` with a FRESH unique id
      (`<repo>-<topic>-<branch>-<UTC>-<pid>` — never reuse a prior goal's id), then `step`/`pr`/`gate`
-     at real transitions, and ALWAYS a terminal `done` (or `fail`) when the goal finishes or hands off.
+     at real transitions. Before returning control, ALWAYS emit an honest lifecycle outcome: `pause`,
+     `handoff`, `done`, `fail`, or `cancel`; a tool timeout is resumable evidence, not automatic failure.
      Wrap every call so a non-zero exit is non-fatal. Do this for the pipeline run itself even when the
      work never routes into `orchestrate` — that routing case only ADDS the orchestrate leg's emissions.
 
