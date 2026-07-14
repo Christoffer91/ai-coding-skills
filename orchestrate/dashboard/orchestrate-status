@@ -352,7 +352,12 @@ def main():
         if a.actor: r["steps"][i]["actor"] = a.actor
         r["step"] = a.n
         if a.pid: r["pid"] = a.pid
-        if a.log: r["consoleLog"] = os.path.abspath(a.log)
+        if a.log:
+            # Record THIS step's own log (so clicking step N opens that agent's output) and
+            # point the run-level console at the most recent step's log too.
+            log_abs = os.path.abspath(a.log)
+            r["steps"][i]["log"] = log_abs
+            r["consoleLog"] = log_abs
         r["status"] = "review" if (a.n == 6 and a.state == "active") else \
                       "fail" if a.state == "fail" else "running"
         save(r)

@@ -131,6 +131,8 @@ class EmitterTests(unittest.TestCase):
         self.assertTrue(self.data()["consoleLog"].endswith("relative.log"))
         self.status("step", "--id", "t", "--n", "2", "--state", "active", "--log", "/tmp/other.log")
         self.assertEqual(self.data()["consoleLog"], "/tmp/other.log")
+        # step --log also records THIS step's own log so the per-step viewer can open it
+        self.assertEqual(self.data()["steps"][1]["log"], "/tmp/other.log")
         self.status("step", "--id", "t", "--n", "2", "--state", "done")
         self.assertEqual(self.data()["consoleLog"], "/tmp/other.log")  # unchanged without --log
 
