@@ -68,6 +68,20 @@ class EmitterTests(unittest.TestCase):
     def data(self) -> dict:
         return json.loads((self.home / ".orchestrate/runs/t.json").read_text())
 
+    def test_done_normalizes_status_to_terminal_enum(self):
+        # A caller that passes prose as --status (e.g. a Codex goal summary) must still close the
+        # run: any non-failed value becomes "done". Otherwise the polluted status never matches the
+        # dashboard's terminal check and the card lingers as a zombie "running"/"quiet" forever.
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("done", "--id", "t", "--status", "85 skills reviewed; validation clean")
+        self.assertEqual(self.data()["status"], "done")
+        self.assertEqual(self.data()["steps"][6]["state"], "done")
+        # explicit failure still maps to failed
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("done", "--id", "t", "--status", "FAILED")
+        self.assertEqual(self.data()["status"], "failed")
+        self.assertEqual(self.data()["steps"][6]["state"], "fail")
+
     def test_handoff_and_fail_are_explicit_states(self):
         self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
         self.status("handoff", "--id", "t")

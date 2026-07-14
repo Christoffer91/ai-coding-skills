@@ -423,8 +423,13 @@ def main():
 
     elif a.cmd == "done":
         r = need(a.id)
-        r["steps"][6]["state"] = "done" if a.status == "done" else "fail"
-        r["step"] = 7; r["status"] = a.status; r["gate"] = None; save(r)
+        # Normalize to the terminal enum: any non-failed value (including prose a caller
+        # mistakenly passed as --status, e.g. a summary sentence) closes the run as "done".
+        # Without this, a polluted status never matches the dashboard's terminal check and
+        # the run lingers as a zombie "running"/"quiet" card forever.
+        terminal = "failed" if str(a.status).strip().lower() in ("failed", "fail") else "done"
+        r["steps"][6]["state"] = "done" if terminal == "done" else "fail"
+        r["step"] = 7; r["status"] = terminal; r["gate"] = None; save(r)
         clear_liveness(r["id"])
 
     elif a.cmd == "handoff":
