@@ -61,8 +61,9 @@ Invoke `/orchestrate review <topic>` in the repo. From another cwd use `/orchest
 
 1. Resolve the repo root, then select the single run JSON whose topic matches and whose recorded repo/worktree belongs to that git common directory. If zero or multiple match, stop and request the exact run ID; topic alone must never guess across repos.
 2. Require `status=handoff`, a PR number/URL, implementation session ID, review metadata, and a readable absolute baton path. Verify the baton topic/PR/branch agrees with run JSON and `gh pr view`; reject stale or mismatched metadata.
-3. Set step 5 active and review `gh pr diff <n>` for correctness, taste, security, tests, and contract. Categorize blocking/notable/nit. For large diffs (>~500 lines or ≥3 REQUIRED coverage lenses), fan the review into parallel subagent lenses (correctness / security / tests) and synthesize into the single verdict — never ship parallel verdicts. At the end of each review pass, record integer outcome counts with `orchestrate-status metric --id <id> --key review.blocking --value N` and `--key review.notable --value N`.
-4. With no blocking findings, continue to step 7. Otherwise increment `review.iteration` in run JSON and resume the exact implementation session:
+3. After the explicit user review command, run `orchestrate-status resume --id <id> --reason "explicit user review resume"`, then set step 5 active. The resume transition clears stale watchdog state while preserving PR/review metadata; a bare `step` is rejected while the run is still in `handoff`.
+4. Review `gh pr diff <n>` for correctness, taste, security, tests, and contract. Categorize blocking/notable/nit. For large diffs (>~500 lines or ≥3 REQUIRED coverage lenses), fan the review into parallel subagent lenses (correctness / security / tests) and synthesize into the single verdict — never ship parallel verdicts. At the end of each review pass, record integer outcome counts with `orchestrate-status metric --id <id> --key review.blocking --value N` and `--key review.notable --value N`.
+5. With no blocking findings, continue to step 7. Otherwise increment `review.iteration` in run JSON and resume the exact implementation session:
 
 ```bash
 codex exec resume <session-id> -c model_reasoning_effort=medium \  # medium is intentional: fixes are smaller than the implement
@@ -70,9 +71,9 @@ codex exec resume <session-id> -c model_reasoning_effort=medium \  # medium is i
   </dev/null > /tmp/orch-fix.md
 ```
 
-5. Commit linked-worktree edits outside the sandbox, push to the same PR, and repeat review. Stop and escalate after `maxIterations` (default 3).
-6. For deploy, apply `/risk-assess` plus `references/auto-deploy-safety.md`. Merge/deploy only when user-set `deploy_authorized=true`, risk is low, CI is green, the PR is mergeable, and a deploy mechanism is configured. Otherwise hand deploy to the user.
-7. **Terminal emit — mandatory.** However steps 5–7 end, close the run on the dashboard:
+6. Commit linked-worktree edits outside the sandbox, push to the same PR, and repeat review. Stop and escalate after `maxIterations` (default 3).
+7. For deploy, apply `/risk-assess` plus `references/auto-deploy-safety.md`. Merge/deploy only when user-set `deploy_authorized=true`, risk is low, CI is green, the PR is mergeable, and a deploy mechanism is configured. Otherwise hand deploy to the user.
+8. **Terminal emit — mandatory.** However steps 5–7 end, close the run on the dashboard:
    `orchestrate-status done --id <id>` after a merge/deploy or a clean hand-back to the user,
    `done --status failed` (or `fail`) on the iteration cap or an abandoned round. Leaving the run
    in `handoff`/`running` after the work is finished is the false-"stalled" bug.

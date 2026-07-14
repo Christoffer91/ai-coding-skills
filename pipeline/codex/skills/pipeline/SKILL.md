@@ -173,7 +173,12 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
    - Do not introduce external planning trees or third-party state machines by default.
 6. Never edit other track files. If you need to switch tracks, STOPP and ask the user to confirm the new track path.
 7. If the chat context feels degraded (looping, conflicting constraints, lost details), run `context-health-check` and/or `context-compress` and then continue from the stabilized facts.
-8. **DASHBOARD STATUS (emit at pipeline start, not only when routing to `orchestrate`).** Any
+8. Treat a material goal pivot as a task boundary: new acceptance criteria, a new `FULL_SPEC`, or a
+   new PR chain after the prior goal reached `handoff`, `blocked`, or another terminal state must not
+   inherit a long multi-goal chat. Update the continuity track with stable facts and recommend a
+   fresh task grounded in that track and repository sources. Resume in place only when the goal,
+   approved contract, working set, and next legal action are unchanged.
+9. **DASHBOARD STATUS (emit at pipeline start, not only when routing to `orchestrate`).** Any
    non-trivial run — every `EXECUTE`, and any `PLAN_ONLY` above `FAST` — must surface on the local
    dashboard so it isn't invisible while it works. This is observational and fail-open: never let it
    block, approve, or change the run. Do it here at intake, not reactively.

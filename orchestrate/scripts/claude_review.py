@@ -62,7 +62,9 @@ def load_json(path: Path | None) -> dict[str, object]:
 
 def auth_mode(value: dict[str, object]) -> str:
     if value.get("loggedIn") is not True:
-        raise ContractError("Claude CLI is not authenticated")
+        raise ContractError(
+            "Claude CLI is not authenticated or credentials are inaccessible in this execution context"
+        )
     if (
         value.get("authMethod") == "claude.ai"
         and value.get("apiProvider") == "firstParty"

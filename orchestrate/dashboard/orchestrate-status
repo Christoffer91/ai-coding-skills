@@ -19,6 +19,7 @@ driver at each step. No dependencies (Python 3 stdlib).
   orchestrate-status wait   --id ID [--timeout 0] [--interval 3]   # blocks until answered; prints choice; clears gate
   orchestrate-status done   --id ID [--status done|failed]
   orchestrate-status pause  --id ID
+  orchestrate-status resume --id ID --reason TEXT
   orchestrate-status cancel --id ID [--reason TEXT]
   orchestrate-status checkpoint --id ID (--name NAME [--continuation ACTION] | --clear)
   orchestrate-status resume-command --id ID (--command COMMAND | --clear)
@@ -262,6 +263,7 @@ def main():
     p.add_argument("--max-iterations", type=int, default=3)
     p = sub.add_parser("fail"); common(p)
     p = sub.add_parser("pause"); common(p)
+    p = sub.add_parser("resume"); common(p); p.add_argument("--reason", required=True)
     p = sub.add_parser("cancel"); common(p); p.add_argument("--reason", default="rejected")
     p = sub.add_parser("checkpoint"); common(p)
     p.add_argument("--name", default=None); p.add_argument("--continuation", default=None)
@@ -331,6 +333,14 @@ def main():
     elif a.cmd == "step":
         r = need(a.id); apply_codex_binding(r, codex_binding(a)); i = a.n - 1
         if not (0 <= i < 7): sys.exit("--n must be 1..7")
+        inactive = r.get("status")
+        if inactive == "await":
+            sys.exit("orchestrate-status: run is awaiting a human gate; answer it before emitting a step")
+        if inactive == "paused" or inactive in TERMINAL_STATUSES:
+            sys.exit(
+                f"orchestrate-status: run is {inactive}; use 'resume --id {r['id']} --reason ...' "
+                "before emitting another step"
+            )
         now = int(time.time())
         prev = r["steps"][i].get("state")
         if a.state == "active" and prev != "active":
@@ -343,11 +353,8 @@ def main():
         r["step"] = a.n
         if a.pid: r["pid"] = a.pid
         if a.log: r["consoleLog"] = os.path.abspath(a.log)
-        # A new explicit step resumes a paused run, but cannot resurrect a
-        # terminal/handoff/rejected run through an incidental status emit.
-        if r.get("status") not in ("await", *TERMINAL_STATUSES):
-            r["status"] = "review" if (a.n == 6 and a.state == "active") else \
-                          "fail" if a.state == "fail" else "running"
+        r["status"] = "review" if (a.n == 6 and a.state == "active") else \
+                      "fail" if a.state == "fail" else "running"
         save(r)
 
     elif a.cmd == "pr":
@@ -458,6 +465,26 @@ def main():
         # A displayed gate is already the authoritative inactive ``await`` state;
         # otherwise record an explicit paused state instead of leaving ``running``.
         r["status"] = "await" if r.get("gate") else "paused"; r["pid"] = None; r["worker"] = None
+        save(r)
+        clear_liveness(r["id"])
+
+    elif a.cmd == "resume":
+        r = need(a.id)
+        previous = r.get("status")
+        if previous not in ("paused", "handoff"):
+            sys.exit(
+                f"orchestrate-status: only paused or handoff runs can resume; current status is {previous!r}"
+            )
+        r["status"] = "running"
+        r["pid"] = None
+        r["worker"] = None
+        r["gate"] = None
+        r["resumeReason"] = a.reason
+        r["resumedFrom"] = previous
+        r["resumedAt"] = int(time.time())
+        r["livenessGeneration"] = liveness.new_generation()
+        r.pop("needsRestart", None)
+        r.pop("watchdog", None)
         save(r)
         clear_liveness(r["id"])
 

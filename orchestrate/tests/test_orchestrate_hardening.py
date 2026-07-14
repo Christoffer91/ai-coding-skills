@@ -38,6 +38,7 @@ SYNC = ROOT / "scripts" / "sync-public.sh"
 CODEX_ORCHESTRATE = ROOT / "skills" / "codex" / "skills" / "orchestrate"
 CODEX_PIPELINE = ROOT / "skills" / "codex" / "skills" / "pipeline" / "SKILL.md"
 CODEX_HANDOVER = ROOT / "skills" / "codex" / "skills" / "handover" / "SKILL.md"
+CODEX_CONTEXT_HEALTH = ROOT / "skills" / "codex" / "skills" / "context-health-check" / "SKILL.md"
 
 
 def load_script(name: str, path: Path):
@@ -98,6 +99,31 @@ class EmitterTests(unittest.TestCase):
         self.status("rm", "--id", "t")
         self.assertFalse((self.home / ".orchestrate/runs/t.json").exists())
 
+    def test_handoff_requires_explicit_resume_and_clears_stale_restart_state(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("handoff", "--id", "t", "--review-command", "/orchestrate review t")
+        record = self.data()
+        record["needsRestart"] = True
+        record["watchdog"] = {"reason": "stalled", "at": 123}
+        (self.home / ".orchestrate/runs/t.json").write_text(json.dumps(record))
+
+        rejected = self.status("step", "--id", "t", "--n", "5", "--state", "active", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(self.data()["status"], "handoff")
+        self.assertEqual(self.data()["steps"][4]["state"], "pending")
+
+        self.status("resume", "--id", "t", "--reason", "explicit user review resume")
+        resumed = self.data()
+        self.assertEqual(resumed["status"], "running")
+        self.assertNotIn("needsRestart", resumed)
+        self.assertNotIn("watchdog", resumed)
+        self.assertEqual(resumed["review"]["command"], "/orchestrate review t")
+        self.assertEqual(resumed["resumeReason"], "explicit user review resume")
+
+        self.status("step", "--id", "t", "--n", "5", "--state", "active")
+        self.assertEqual(self.data()["status"], "running")
+        self.assertEqual(self.data()["steps"][4]["state"], "active")
+
     def test_start_and_step_record_this_runs_console_log(self):
         self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T",
                     "--branch", "b", "--log", "relative.log")
@@ -134,6 +160,9 @@ class EmitterTests(unittest.TestCase):
 
         self.status("pause", "--id", "t")
         self.assertEqual(self.data()["status"], "paused")
+        paused_step = self.status("step", "--id", "t", "--n", "2", "--state", "active", check=False)
+        self.assertNotEqual(paused_step.returncode, 0)
+        self.status("resume", "--id", "t", "--reason", "explicit user resume")
         self.status("step", "--id", "t", "--n", "2", "--state", "active")
         self.assertEqual(self.data()["status"], "running")
 
@@ -1024,7 +1053,7 @@ class ClaudeReviewHelperTests(unittest.TestCase):
         }
         self.assertEqual(self.helper.auth_mode(subscription), "subscription")
         self.assertEqual(self.helper.auth_mode({**subscription, "authMethod": "apiKey"}), "metered")
-        with self.assertRaises(self.helper.ContractError):
+        with self.assertRaisesRegex(self.helper.ContractError, "execution context"):
             self.helper.auth_mode({**subscription, "loggedIn": False})
 
     def test_result_contract_bounds_retry_and_verifies_model_metadata(self):
@@ -1879,6 +1908,16 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn("C. Pause or abort", preflight)
 
     @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_claude_subscription_preflight_is_keychain_context_aware(self):
+        skill = (CODEX_ORCHESTRATE / "SKILL.md").read_text()
+        preflight = (CODEX_ORCHESTRATE / "references" / "claude-cli-preflight.md").read_text()
+        self.assertIn("macOS Keychain", preflight)
+        self.assertIn("require_escalated", preflight)
+        self.assertIn("not authoritative", preflight)
+        self.assertIn("Do not start `claude auth login`", preflight)
+        self.assertIn("Keychain-aware preflight", skill)
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
     def test_shared_status_reference_is_optional_unique_and_actor_explicit(self):
         path = CODEX_ORCHESTRATE / "references" / "shared-run-status.md"
         self.assertTrue(path.is_file())
@@ -1948,6 +1987,20 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn("Before returning control to the user", status)
         for terminal in ("`pause`", "`handoff`", "`done`", "`fail`", "`cancel`"):
             self.assertIn(terminal, status)
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_codex_resume_human_gate_and_fresh_task_contracts_are_explicit(self):
+        orchestrate = (CODEX_ORCHESTRATE / "SKILL.md").read_text()
+        status = (CODEX_ORCHESTRATE / "references" / "shared-run-status.md").read_text()
+        pipeline = CODEX_PIPELINE.read_text()
+        context_health = CODEX_CONTEXT_HEALTH.read_text()
+
+        self.assertIn("orchestrate-status resume --id", status)
+        self.assertIn("Automatic goal continuation is not user input", status)
+        self.assertIn("do not poll", orchestrate)
+        self.assertIn("material goal pivot", pipeline)
+        self.assertIn("fresh task", pipeline)
+        self.assertIn("task title no longer matches", context_health)
 
     def test_documented_handoff_metadata_satisfies_emitter_contract(self):
         with tempfile.TemporaryDirectory() as td:

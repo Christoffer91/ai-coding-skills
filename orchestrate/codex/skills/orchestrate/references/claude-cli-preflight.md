@@ -29,6 +29,22 @@ Resolve the Claude Code CLI once and use the same absolute path for `--version`,
 
 Do not run preflight with one PATH and execute with another. A shell alias, wrapper, or older Homebrew binary may expose a different flag surface.
 
+## Keychain-aware execution context
+
+On macOS, Claude Code subscription credentials may be stored in macOS Keychain. A sandboxed
+`loggedIn=false` result is not authoritative because the same native binary can be authenticated in
+the normal user execution context while Keychain access is denied inside the sandbox.
+
+Run the local-only preflight through the trusted canonical runner with `sandbox_permissions` set to
+`require_escalated`. Preflight sends no review packet and invokes only CLI help plus sanitized auth
+status. If an earlier sandboxed preflight reported unauthenticated, rerun this exact preflight once
+outside the sandbox before classifying auth or asking the user to intervene. Use the same resolved
+absolute binary for `run-review` after outbound approval.
+
+Do not start `claude auth login` from a sandboxed false negative. Only after the Keychain-aware
+preflight also reports unauthenticated may the user be asked to complete the interactive login; Codex
+must never enter, read, or expose credentials.
+
 ## Confirm authentication
 
 Run `<absolute-claude> auth status --json` locally and parse it as JSON. Report only `loggedIn`, `authMethod`, `apiProvider`, and `subscriptionType`; never print account identifiers or credentials.

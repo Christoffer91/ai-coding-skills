@@ -26,6 +26,7 @@ orchestrate-status metric --id <id> --key tests --value "12/12"
 orchestrate-status gate   --id <id> --question "…" --option "Merge & deploy:primary" --option "Leave PR open"
 choice=$(orchestrate-status wait --id <id> --timeout 0)   # blocks until you click; prints your choice
 orchestrate-status done   --id <id>
+orchestrate-status resume --id <id> --reason "explicit user resume"
 orchestrate-status resume-command --id <id> (--command "…" | --clear)
 orchestrate-status rm     --id <id>
 ```
@@ -124,6 +125,6 @@ remain supported. This is CSRF hardening, not a replacement for the tailnet trus
 boundary; never enable Funnel for this dashboard.
 
 ## Run lifecycle extras
-`orchestrate-status pause|cancel [--reason]|checkpoint|execution --id <id>` — pause/resume
-bookkeeping (`pause` is an explicit inactive status unless an open gate remains `await`; the next active `step` resumes it), cancel with a recorded reason, persist a named checkpoint, and update
+`orchestrate-status pause|resume --reason|cancel [--reason]|checkpoint|execution --id <id>` — lifecycle
+bookkeeping (`pause` is inactive and requires explicit `resume`; `step` never resumes it implicitly), cancel with a recorded reason, persist a named checkpoint, and update
 execution state for approval flows (used by the driver's approval gates and resume paths).

@@ -134,6 +134,17 @@ orch_emit step --id "$RUN_ID" --n 3 --state active \
 orch_emit step --id "$RUN_ID" --n 3 --state done --actor "Terra · medium"
 ```
 
+An inactive run never resumes through an incidental `step`. After a new user message explicitly
+resumes a `paused` run or accepts a `handoff`, emit the lifecycle transition first:
+
+```bash
+orchestrate-status resume --id "$RUN_ID" --reason "explicit user resume"
+```
+
+This preserves PR/review metadata, rotates the liveness generation, and clears stale
+`needsRestart`/watchdog evidence. `await`, `done`, `failed`, and `rejected` cannot be resumed this
+way. Answer an `await` gate through its recorded option; create a fresh run after a terminal result.
+
 For recoverable `needs-rework`, `ESCALATE/BLOCKED`, or no-progress stops, keep the run non-terminal: emit the current step as `pending` with a short reason and then `pause`. Reserve `fail --id "$RUN_ID"` for an actual terminal failure. On successful local completion use `done --id "$RUN_ID"`; a `PR_READY` review handoff uses the handoff sequence below instead.
 
 ## Timeouts and lifecycle closure
@@ -188,6 +199,12 @@ fi
 ```
 
 The dashboard window and terminal decision are sequential, not concurrent: while the bounded `wait` is active, a valid dashboard answer is the decision. After timeout, do not call `wait` again for that gate; use the terminal decision and ignore any late dashboard answer. The next `gate` call clears stale answer data. `handoff`, `cancel`, `fail`, and `done` clear the displayed gate when they become the next terminal state.
+
+Automatic goal continuation is not user input. After emitting the terminal question, do not poll
+the PR, gate, answer file, or external review output; do not repeat the same question in automatic
+continuation turns; and do not count those turns as failed human responses. Preserve `await` or
+`paused`, return control once, and resume only after a new user message or a valid bounded dashboard
+answer supplies the decision.
 
 The dashboard binds to localhost and is not itself phone-accessible. Gate notifications reach a phone only when `ORCH_NOTIFY_CMD` or repo-local `notify_cmd` is configured to use a phone-capable hook; the macOS Notification Center fallback is desktop-only.
 
