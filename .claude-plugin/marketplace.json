@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "orchestrate",
-      "description": "Dual-brain plan → execute → review → ship loop: Claude plans and reviews the PR, OpenAI Codex CLI critiques the plan, writes the code, opens the PR, and applies review edits. Deploy is risk-gated. Skill only — run orchestrate/install.sh from a clone for the dashboard, driver, and Codex-side skill.",
+      "description": "Dual-brain plan \u2192 execute \u2192 review \u2192 ship loop: Claude plans and reviews the PR, OpenAI Codex CLI critiques the plan, writes the code, opens the PR, and applies review edits. Deploy is risk-gated. Skill only \u2014 run orchestrate/install.sh from a clone for the dashboard, driver, and Codex-side skill.",
       "source": "./orchestrate/claude",
       "category": "development"
     },
@@ -19,8 +19,14 @@
     },
     {
       "name": "debug",
-      "description": "Evidence-driven debugging: a cheap systematic single-pass loop that escalates hard bugs to a dual-brain council — Claude and Codex CLI research independently, hypotheses are falsified, and candidate fixes race in disposable worktrees. Token-conscious with a mandatory usage report.",
+      "description": "Evidence-driven debugging: a cheap systematic single-pass loop that escalates hard bugs to a dual-brain council \u2014 Claude and Codex CLI research independently, hypotheses are falsified, and candidate fixes race in disposable worktrees. Token-conscious with a mandatory usage report.",
       "source": "./debug/claude",
+      "category": "development"
+    },
+    {
+      "name": "critique",
+      "description": "Fair-but-rigorous critical-friend pass on an idea, plan, prompt, or architecture before you commit \u2014 steelman, challenge, calibrated verdict. Modes: rubber-duck / critique / hard-challenge / decision. Can fan out parallel subagent lenses and pull an independent second-model opinion.",
+      "source": "./critique/claude",
       "category": "development"
     }
   ]
