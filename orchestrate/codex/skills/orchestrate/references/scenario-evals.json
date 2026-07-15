@@ -3,6 +3,10 @@
     "id": "dry-run",
     "mode": "DRY_RUN",
     "profile": "AUTO",
+    "explicit_skill_invocation": true,
+    "standing_authorization_overridden": true,
+    "local_preflight_executed": false,
+    "external_review_executed": false,
     "spawn_roles": [],
     "writes": false,
     "terminal": "PLAN_REPORTED"
@@ -55,6 +59,8 @@
     "spec_mode": "FULL_SPEC",
     "explorer": "orchestrate_explorer_deep",
     "risk_gate": true,
+    "explicit_skill_invocation": false,
+    "standing_external_review_authorization": false,
     "external_critique": "fable-with-opus-fallback",
     "external_approval_required": true,
     "claude_absolute_binary_required": true,
@@ -72,6 +78,123 @@
     "baton_polling": false,
     "writes_before_approval": false,
     "terminal": "AWAIT_APPROVAL"
+  },
+  {
+    "id": "explicit-orchestrate-external-review",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "explicit_skill_invocation": true,
+    "external_lane_selected": true,
+    "standing_external_review_authorization": true,
+    "secret_free_packet_required": true,
+    "local_preflight_required": true,
+    "preflight_output_command": {
+      "source": "preflight-json.command",
+      "type": "array-of-strings",
+      "rendering": "shell-escaped-without-argv-mutation",
+      "represents": "underlying-claude-argv",
+      "is_run_review_wrapper": false,
+      "informational_only": true
+    },
+    "allowance": {
+      "scope": "explicit-invocation",
+      "states": [
+        "unused",
+        "consumed"
+      ],
+      "initial": "unused",
+      "required_before_standing_dispatch": "unused",
+      "transition": "atomic-unused-to-consumed-immediately-before-run-review-dispatch",
+      "after_any_dispatch_attempt": "consumed"
+    },
+    "runner_dispatch": {
+      "entrypoint": "shared-runner:run-review",
+      "known_inputs": [
+        "packet",
+        "output"
+      ],
+      "approved_outbound": true,
+      "same_turn_as_progress": true
+    },
+    "review_sequence": [
+      {
+        "stage": "plan-critique",
+        "authorization": "standing-unused-allowance",
+        "allowance_after_dispatch": "consumed"
+      },
+      {
+        "stage": "final-review",
+        "standing_dispatch_refused": true,
+        "required_authorization": "separate-explicit-outbound-approval-or-new-explicit-orchestrate-invocation"
+      }
+    ],
+    "extra_comparative_paid_calls_authorized": false,
+    "subscription_metered_policy_unchanged": true,
+    "data_policy_retry_limit": 0,
+    "standing_authorization_excludes": [
+      "extra-or-comparative-paid-calls",
+      "secrets-customer-data-or-raw-transcripts",
+      "policy-bypass",
+      "push-pr-creation-merge-or-deploy",
+      "install-migration-or-destructive-action",
+      "tenant-or-live-calls",
+      "all-other-hard-gates"
+    ],
+    "terminal": "AWAIT_FINAL_REVIEW_OUTBOUND_AUTHORIZATION"
+  },
+  {
+    "id": "explicit-orchestrate-preflight-failure",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "explicit_skill_invocation": true,
+    "allowance_before": "unused",
+    "preflight_result": "failure-before-runner-dispatch",
+    "runner_dispatch_attempted": false,
+    "review_packet_sent": false,
+    "allowance_after": "unused",
+    "disposition": "EXTERNAL_REVIEW_BLOCKED:preflight",
+    "optional_external_fallback": "internal-reviewer",
+    "terminal": "INTERNAL_REVIEW_OR_SINGLE_HUMAN_DECISION"
+  },
+  {
+    "id": "explicit-orchestrate-data-policy-consumption",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "explicit_skill_invocation": true,
+    "allowance_before": "unused",
+    "allowance_transition": "atomic-unused-to-consumed-immediately-before-run-review-dispatch",
+    "runner_dispatch_attempted": true,
+    "tool_rejected_before_packet_sent": true,
+    "allowance_after": "consumed",
+    "disposition": "EXTERNAL_REVIEW_BLOCKED:data-policy",
+    "data_policy_retry_limit": 0,
+    "later_standing_dispatch_allowed": false,
+    "terminal": "INTERNAL_REVIEW_OR_SINGLE_HUMAN_DECISION"
+  },
+  {
+    "id": "explicit-orchestrate-timeout-consumption",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "explicit_skill_invocation": true,
+    "allowance_before": "unused",
+    "allowance_transition": "atomic-unused-to-consumed-immediately-before-run-review-dispatch",
+    "runner_dispatch_attempted": true,
+    "runner_result": "timeout",
+    "allowance_after": "consumed",
+    "external_retry_allowed": false,
+    "later_standing_dispatch_allowed": false,
+    "terminal": "INTERNAL_REVIEW_OR_SEPARATE_OUTBOUND_APPROVAL"
+  },
+  {
+    "id": "explicit-orchestrate-internal-only",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "explicit_skill_invocation": true,
+    "internal_only_instruction": true,
+    "standing_authorization_overridden": true,
+    "local_preflight_executed": false,
+    "external_review_executed": false,
+    "terminal": "INTERNAL_REVIEW_ONLY"
   },
   {
     "id": "failure-escalation",
@@ -101,6 +224,7 @@
     "mode": "PR_READY",
     "profile": "STANDARD",
     "external_action_requires_explicit_authorization": true,
+    "standing_external_review_authorization_covers_pr": false,
     "writes": true,
     "terminal": "PR_READY_LOCAL"
   }

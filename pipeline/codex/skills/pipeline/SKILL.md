@@ -205,12 +205,16 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
      real path: `nohup "$HOME/.claude/skills/orchestrate/dashboard/orchestrate-dashboard" >/tmp/orch-dashboard.log 2>&1 &`.
    - **Emit** per `orchestrate/references/shared-run-status.md`: a `start` with a FRESH unique id
      (`<repo>-<topic>-<branch>-<UTC>-<pid>` — never reuse a prior goal's id), then `step`/`pr`/`gate`
-     at real transitions. Pass `--log "$STEP_LOG"` on EVERY `step --state active|done` emit, pointing
-     to that phase's captured output (for example its `codex exec -o` file); the dashboard stores it as
-     that step's own log for the step 1–7 viewer. A finished or handed-over round must ALWAYS end with
-     the clean terminal command `done --id "$RUN_ID"`, or `fail --id "$RUN_ID"` for terminal failure.
-     Never put prose in `done --status`; its normalization is defensive, not an output channel. Emit
-     `handoff` metadata before `done` when needed; use `pause` only for genuinely resumable work and
+     at real transitions. Every `step` emit should carry `--log "$STEP_LOG"` for that phase's captured
+     output (for example its `codex exec -o` file) and `--tokens "$STEP_TOKENS"` when Codex has the
+     phase's observed integer `tokens used` value. The dashboard stores both on that specific step for
+     the step 1–7 viewer. Use `--state active|done` at real transitions; `--state` is optional, so a
+     later metadata-only `step --n N --log ... --tokens ...` records newly available metadata without
+     changing the step state. Do not estimate tokens. A finished round that stays local must ALWAYS end
+     with the clean terminal command `done --id "$RUN_ID"`, or `fail --id "$RUN_ID"` for terminal failure.
+     Never put prose in `done --status`; its normalization is defensive, not an output channel. A review
+     handoff instead emits `handoff` and STAYS in `handoff` — do NOT `done` it; the reviewer resumes that
+     exact run and closes it after review. Use `pause` only for genuinely resumable work and
      `cancel` for explicit abort/rejection. Otherwise a pid-less non-terminal run without a fresh lease
      is auto-retired as `abandoned` after more than six silent hours. A tool timeout is resumable
      evidence, not automatic failure. Wrap every call so a non-zero exit is non-fatal. Do this for the

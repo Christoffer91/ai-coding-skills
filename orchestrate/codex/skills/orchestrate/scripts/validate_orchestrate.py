@@ -21,6 +21,11 @@ EXPECTED_SCENARIOS = {
     "fast-mechanical-change",
     "standard-spec-critique",
     "deep-security-external-critique",
+    "explicit-orchestrate-external-review",
+    "explicit-orchestrate-preflight-failure",
+    "explicit-orchestrate-data-policy-consumption",
+    "explicit-orchestrate-timeout-consumption",
+    "explicit-orchestrate-internal-only",
     "failure-escalation",
     "approved-plan-resume",
     "pr-ready-stop-gate",
@@ -62,6 +67,25 @@ def main() -> int:
         "Every `FULL_SPEC`",
         "FAST -> STANDARD -> DEEP",
         "orchestrate_plan_critic",
+        "standing authorization",
+        "--approved-outbound",
+        "same turn",
+        "Implicit routing",
+        "internal-only",
+        "external_review_allowance: unused",
+        "`unused|consumed`",
+        "atomically compare and set",
+        "JSON `command` array",
+        "underlying Claude command",
+        "Every dispatched attempt remains consumed",
+        "Claude failure",
+        "timeout",
+        "malformed output",
+        "missing model metadata",
+        "tool/data-policy rejection",
+        "eligible Fable-to-Opus fallback",
+        "new explicit `$orchestrate` invocation",
+        "preflight failure",
     ):
         if required not in skill_text:
             errors.append(f"SKILL.md missing contract text: {required}")
@@ -94,6 +118,18 @@ def main() -> int:
             "--safe-mode",
             '--tools ""',
             "stdin",
+            "standing authorization",
+            "--approved-outbound",
+            "same turn",
+            "redundant second approval",
+            "JSON `command` array",
+            "shell-escaped informational argv",
+            "not the `run-review` wrapper",
+            "atomically change the allowance",
+            "`unused` to `consumed`",
+            "Any runner dispatch consumes",
+            "failed preflight sends no packet",
+            "separate explicit outbound approval",
         ):
             if required not in claude_text:
                 errors.append(f"Claude critique reference missing: {required}")
@@ -101,6 +137,28 @@ def main() -> int:
             errors.append("Claude critique reference must not mention a dangerous permission bypass")
         if "intended to resolve to Opus 4.8" in claude_text:
             errors.append("Claude critique reference must not infer Opus 4.8 from an alias")
+    claude_final_review = skill_dir / "references/claude-final-review.md"
+    if not claude_final_review.is_file():
+        errors.append(f"missing Claude final review reference: {claude_final_review}")
+    else:
+        final_review_text = claude_final_review.read_text(encoding="utf-8")
+        for required in (
+            "standing authorization",
+            "--approved-outbound",
+            "same turn",
+            "redundant second approval",
+            "separate explicit approval",
+            "additional paid call",
+            "JSON `command` array",
+            "shell-escaped informational argv",
+            "not the `run-review` wrapper",
+            "atomically change the allowance",
+            "Any runner dispatch consumes",
+            "failed preflight sends no packet",
+            "plan critique already consumed",
+        ):
+            if required not in final_review_text:
+                errors.append(f"Claude final review reference missing: {required}")
     claude_preflight = skill_dir / "references/claude-cli-preflight.md"
     if not claude_preflight.is_file():
         errors.append(f"missing Claude CLI preflight reference: {claude_preflight}")
@@ -114,9 +172,27 @@ def main() -> int:
             "exactly once",
             "modelUsage",
             "estimated model cost",
+            "standing outbound authorization",
+            "--approved-outbound",
+            "same turn",
+            "redundant second approval",
+            "internal-only",
+            "default `$2` metered cap",
+            "zero retries after data-policy rejection",
+            "`command` to be an array of strings",
+            "without adding, removing, or reordering argv",
+            "not the shared `run-review` wrapper",
+            "printing it is not an approval gate",
+            "atomically compare and set",
+            "EXTERNAL_REVIEW_BLOCKED:preflight",
+            "leaves the allowance `unused`",
+            "keep `external_review_allowance: consumed`",
+            "timeout",
         ):
             if required not in preflight_text:
                 errors.append(f"Claude CLI preflight reference missing: {required}")
+        if "resolved `run-review` command" in preflight_text:
+            errors.append("Claude CLI preflight must not label its command array as a resolved run-review command")
 
     writable = [name for name, (_, _, sandbox, _) in EXPECTED.items() if sandbox == "workspace-write"]
     if writable != ["orchestrate_executor"]:
@@ -139,6 +215,13 @@ def main() -> int:
         dry_run = by_id["dry-run"]
         if dry_run.get("writes") is not False or dry_run.get("spawn_roles") != []:
             errors.append("dry-run scenario must not write or spawn agents")
+        if (
+            dry_run.get("explicit_skill_invocation") is not True
+            or dry_run.get("standing_authorization_overridden") is not True
+            or dry_run.get("local_preflight_executed") is not False
+            or dry_run.get("external_review_executed") is not False
+        ):
+            errors.append("DRY_RUN must override explicit-invocation external authorization")
         direct = by_id["direct-qa"]
         if direct.get("spawn_roles") != [] or direct.get("spec_mode") != "NONE":
             errors.append("direct-qa scenario must not spawn agents or create an implementation spec")
@@ -168,8 +251,10 @@ def main() -> int:
             security.get("explorer") != "orchestrate_explorer_deep"
             or security.get("risk_gate") is not True
             or security.get("external_approval_required") is not True
+            or security.get("explicit_skill_invocation") is not False
+            or security.get("standing_external_review_authorization") is not False
         ):
-            errors.append("DEEP security scenario must use deep evidence, risk, and external approval gates")
+            errors.append("implicit DEEP security routing must retain deep evidence, risk, and external approval gates")
         if (
             security.get("claude_absolute_binary_required") is not True
             or security.get("claude_auth_preflight_required") is not True
@@ -186,6 +271,114 @@ def main() -> int:
             or security.get("baton_polling") is not False
         ):
             errors.append("external Claude scenario must enforce binary, auth, budget, fallback, metadata, and data-policy bounds")
+        explicit_external = by_id["explicit-orchestrate-external-review"]
+        if (
+            explicit_external.get("explicit_skill_invocation") is not True
+            or explicit_external.get("external_lane_selected") is not True
+            or explicit_external.get("standing_external_review_authorization") is not True
+            or explicit_external.get("secret_free_packet_required") is not True
+            or explicit_external.get("local_preflight_required") is not True
+            or explicit_external.get("extra_comparative_paid_calls_authorized") is not False
+            or explicit_external.get("subscription_metered_policy_unchanged") is not True
+            or explicit_external.get("data_policy_retry_limit") != 0
+        ):
+            errors.append("explicit $orchestrate must preserve the bounded external-review policy")
+        expected_preflight_command = {
+            "source": "preflight-json.command",
+            "type": "array-of-strings",
+            "rendering": "shell-escaped-without-argv-mutation",
+            "represents": "underlying-claude-argv",
+            "is_run_review_wrapper": False,
+            "informational_only": True,
+        }
+        if explicit_external.get("preflight_output_command") != expected_preflight_command:
+            errors.append("explicit review must render the exact preflight command array as informational underlying Claude argv")
+        expected_allowance = {
+            "scope": "explicit-invocation",
+            "states": ["unused", "consumed"],
+            "initial": "unused",
+            "required_before_standing_dispatch": "unused",
+            "transition": "atomic-unused-to-consumed-immediately-before-run-review-dispatch",
+            "after_any_dispatch_attempt": "consumed",
+        }
+        if explicit_external.get("allowance") != expected_allowance:
+            errors.append("explicit review must use an invocation-scoped atomic unused-to-consumed allowance")
+        expected_dispatch = {
+            "entrypoint": "shared-runner:run-review",
+            "known_inputs": ["packet", "output"],
+            "approved_outbound": True,
+            "same_turn_as_progress": True,
+        }
+        if explicit_external.get("runner_dispatch") != expected_dispatch:
+            errors.append("explicit review must dispatch the shared runner with known I/O and approved outbound in the same turn")
+        expected_sequence = [
+            {
+                "stage": "plan-critique",
+                "authorization": "standing-unused-allowance",
+                "allowance_after_dispatch": "consumed",
+            },
+            {
+                "stage": "final-review",
+                "standing_dispatch_refused": True,
+                "required_authorization": "separate-explicit-outbound-approval-or-new-explicit-orchestrate-invocation",
+            },
+        ]
+        if explicit_external.get("review_sequence") != expected_sequence:
+            errors.append("a standing-authorized plan dispatch must consume the allowance and gate later final review")
+        expected_exclusions = {
+            "extra-or-comparative-paid-calls",
+            "secrets-customer-data-or-raw-transcripts",
+            "policy-bypass",
+            "push-pr-creation-merge-or-deploy",
+            "install-migration-or-destructive-action",
+            "tenant-or-live-calls",
+            "all-other-hard-gates",
+        }
+        if set(explicit_external.get("standing_authorization_excludes", [])) != expected_exclusions:
+            errors.append("explicit invocation standing authorization must preserve every unrelated hard gate")
+        preflight_failure = by_id["explicit-orchestrate-preflight-failure"]
+        if (
+            preflight_failure.get("allowance_before") != "unused"
+            or preflight_failure.get("preflight_result") != "failure-before-runner-dispatch"
+            or preflight_failure.get("runner_dispatch_attempted") is not False
+            or preflight_failure.get("review_packet_sent") is not False
+            or preflight_failure.get("allowance_after") != "unused"
+            or preflight_failure.get("disposition") != "EXTERNAL_REVIEW_BLOCKED:preflight"
+            or preflight_failure.get("optional_external_fallback") != "internal-reviewer"
+        ):
+            errors.append("preflight failure must send no packet, preserve unused allowance, and record the blocked disposition")
+        data_policy = by_id["explicit-orchestrate-data-policy-consumption"]
+        if (
+            data_policy.get("allowance_before") != "unused"
+            or data_policy.get("allowance_transition") != "atomic-unused-to-consumed-immediately-before-run-review-dispatch"
+            or data_policy.get("runner_dispatch_attempted") is not True
+            or data_policy.get("tool_rejected_before_packet_sent") is not True
+            or data_policy.get("allowance_after") != "consumed"
+            or data_policy.get("disposition") != "EXTERNAL_REVIEW_BLOCKED:data-policy"
+            or data_policy.get("data_policy_retry_limit") != 0
+            or data_policy.get("later_standing_dispatch_allowed") is not False
+        ):
+            errors.append("a dispatched data-policy rejection must consume the allowance with zero retries")
+        timeout = by_id["explicit-orchestrate-timeout-consumption"]
+        if (
+            timeout.get("allowance_before") != "unused"
+            or timeout.get("allowance_transition") != "atomic-unused-to-consumed-immediately-before-run-review-dispatch"
+            or timeout.get("runner_dispatch_attempted") is not True
+            or timeout.get("runner_result") != "timeout"
+            or timeout.get("allowance_after") != "consumed"
+            or timeout.get("external_retry_allowed") is not False
+            or timeout.get("later_standing_dispatch_allowed") is not False
+        ):
+            errors.append("a dispatched timeout must consume the allowance and forbid another standing-authorized pass")
+        internal_only = by_id["explicit-orchestrate-internal-only"]
+        if (
+            internal_only.get("explicit_skill_invocation") is not True
+            or internal_only.get("internal_only_instruction") is not True
+            or internal_only.get("standing_authorization_overridden") is not True
+            or internal_only.get("local_preflight_executed") is not False
+            or internal_only.get("external_review_executed") is not False
+        ):
+            errors.append("explicit internal-only instructions must override standing external authorization")
         resume = by_id["approved-plan-resume"]
         if (
             resume.get("planner_spawned") is not False
@@ -196,7 +389,10 @@ def main() -> int:
         ):
             errors.append("approved plan resume must skip replanning/recritique and retain one valid canonical state")
         pr_ready = by_id["pr-ready-stop-gate"]
-        if pr_ready.get("external_action_requires_explicit_authorization") is not True:
+        if (
+            pr_ready.get("external_action_requires_explicit_authorization") is not True
+            or pr_ready.get("standing_external_review_authorization_covers_pr") is not False
+        ):
             errors.append("PR_READY scenario must gate external actions")
 
     if errors:
@@ -205,7 +401,7 @@ def main() -> int:
             print(f"- {error}")
         return 1
 
-    print("[OK] Adaptive pipeline profiles, spec/critique gates, model roles, and eight scenarios are aligned.")
+    print("[OK] Adaptive pipeline profiles, spec/critique gates, model roles, and thirteen scenarios are aligned.")
     return 0
 
 

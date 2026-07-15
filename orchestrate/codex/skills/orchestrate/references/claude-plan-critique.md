@@ -1,10 +1,14 @@
 # Claude Plan Critique Gate
 
-Use this only for a bounded, secret-free `FULL_SPEC` after explicit approval for an external/paid Claude Code call. Internal `orchestrate_plan_critic` remains the default and the fallback when approval, authentication, entitlement, or model verification is absent.
+Use this only for a bounded, secret-free `FULL_SPEC` after outbound authorization is established. An explicit user invocation of `$orchestrate` supplies invocation-scoped `external_review_allowance: unused` for the workflow's single selected external review pass; implicit routing or a request without explicit `$orchestrate` still requires separate explicit approval. Internal `orchestrate_plan_critic` remains the default and the fallback when authorization, authentication, entitlement, or model verification is absent.
 
 ## Safe command
 
-Follow [claude-cli-preflight.md](claude-cli-preflight.md) through the shared runner, including absolute binary resolution, authentication classification, outbound-data review, and the one-attempt direct Opus fallback. After `preflight`, print the exact command and wait for explicit approval before invoking `run-review`; never hand-build or hand-parse the Claude call.
+Follow [claude-cli-preflight.md](claude-cli-preflight.md) through the shared runner, including absolute binary resolution, authentication classification, outbound-data review, and the one-attempt direct Opus fallback. After `preflight`, print exactly its JSON `command` array as shell-escaped informational argv; it is the underlying Claude command, not the `run-review` wrapper or an approval gate. When standing authorization came from explicit `$orchestrate`, atomically change the allowance from `unused` to `consumed` immediately before invoking the shared runner with the known packet/output paths and `--approved-outbound` in the same turn. Refuse standing-authorized dispatch when the allowance is not `unused`; do not ask for a redundant second approval after the transition. For implicit routing, wait for separate explicit outbound approval before invoking it. Never hand-build or hand-parse the Claude call.
+
+Any runner dispatch consumes the allowance regardless of success, failure, timeout, malformed or missing metadata, tool/data-policy rejection, or eligible Opus fallback. A failed preflight sends no packet and leaves it `unused`. After a standing-authorized plan critique dispatch, final external review requires separate explicit outbound approval or a new explicit `$orchestrate` invocation.
+
+Do not enter this lane for `DRY_RUN` or an explicit internal-only/no-external request. Standing authorization covers only this selected review pass and does not approve another paid comparison, repository external action, or any other hard gate.
 
 ```bash
 "$CLAUDE_BIN" -p \
