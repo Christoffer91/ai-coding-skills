@@ -20,7 +20,7 @@ Leave it running in a tab; it auto-refreshes every 4s. (Tip: symlink both script
 The `/orchestrate` skill and `scripts/orchestrate.sh` call these at each step (they no-op if the tool isn't installed, so status is optional telemetry):
 ```bash
 orchestrate-status start  --id <id> --repo R --topic T --title "…" --branch B [--planner "…"] [--executor "…"] [--resume-command "…"] [--codex-session /abs/rollout.jsonl --codex-turn <turn-id>]
-orchestrate-status step   --id <id> --n 1..7 --state active|done|fail [--note "…"] [--codex-session /abs/rollout.jsonl --codex-turn <turn-id>]
+orchestrate-status step   --id <id> --n 1..7 [--state active|done|fail|pending|skipped] [--note "…"] [--log PATH] [--tokens N] [--codex-session /abs/rollout.jsonl --codex-turn <turn-id>]
 orchestrate-status pr     --id <id> --number N --url U [--state OPEN]
 orchestrate-status metric --id <id> --key tests --value "12/12"
 orchestrate-status gate   --id <id> --question "…" --option "Merge & deploy:primary" --option "Leave PR open"
@@ -31,6 +31,22 @@ orchestrate-status resume-command --id <id> (--command "…" | --clear)
 orchestrate-status rm     --id <id>
 ```
 `<id>` is any stable slug for the run (e.g. `<repo>-<topic>`).
+
+Omitting `--state` makes a metadata-only step update (such as `--log` or `--tokens`) that preserves
+the step's current state.
+
+## Per-step logs and tokens
+
+The step's `⌗ log ↗` link opens `/console?id=<run>&step=N`; its viewer loads data from
+`/api/console`. Use `--log PATH` to store an explicit `steps[n].log`. The durable driver
+convention is `~/.orchestrate/artifacts/<id>/step-N-<role>.log`; there is no automatic/global
+`$TMPDIR` fallback. The viewer has no cross-step fallback for explicit logs, but legacy
+`critique.md` or `implementation.md` role artifacts can be shared by compatible steps, so only
+explicit logs and `step-N-<role>.log` identify unambiguously per-step agent output.
+
+`--tokens N` stores the count for that step and renders it beside the step duration. When
+`metrics["tokens.total"]` is absent, zero, or nonnumeric, the 7-day header chip falls back to the
+sum of per-step tokens.
 
 `gate`, `fail`, and `handoff` each send one notification. Set `ORCH_NOTIFY_CMD` to an executable path, or set repo-local `notify_cmd` in `.ai/orchestrate.toml` to a quoted path or argv array. The message is appended as one argument and the hook is killed after 10 seconds; no shell evaluates the config. On macOS, Notification Center is the desktop fallback when no hook is configured. Use a phone-capable hook or in-session `PushNotification` for Remote Control.
 
