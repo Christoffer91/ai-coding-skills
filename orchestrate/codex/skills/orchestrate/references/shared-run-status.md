@@ -118,12 +118,20 @@ Emit both state and actor so Codex-primary runs do not inherit Claude-centric de
 `active` before work and `done` only after its evidence is recorded. `--state` is optional: a
 metadata-only `step --n N --log ... --tokens ...` leaves the current step state unchanged.
 
-Give every phase its own captured output file. Every `step` emit should carry that same path with
-`--log` and the phase's observed integer `tokens used` value with `--tokens` whenever each value is
-available. The emitter stores them in `steps[N-1].log` and `steps[N-1].tokens`; clicking step 1–7
-opens exactly that agent's output, and its token count appears beside the duration. For a Codex phase,
-use the file supplied to `codex exec -o` and the exact token count reported by that phase. Never
-estimate token usage; omit `--tokens` when the count is unavailable.
+Give every phase its own captured output file under `$HOME/.orchestrate/artifacts/$RUN_ID/`
+(durable — never `$TMPDIR`). Every `step` emit MUST carry that path with `--log`. Token emission is
+likewise **mandatory for every codex phase, not best-effort**: every `codex exec` prints a trailing
+`tokens used` line (the integer, comma-formatted, on the following line), so "unavailable" applies
+only to non-codex phases. After each codex phase, extract and emit:
+
+```bash
+TOK=$(awk 'prev ~ /tokens used/ {s=$0; gsub(/[,[:space:]]/,"",s); if (s ~ /^[0-9]+$/) last=s} {prev=$0} END{print last}' "$STEP_LOG")
+[ -n "$TOK" ] && orch_emit step --id "$RUN_ID" --n "$STEP_N" --tokens "$TOK"
+```
+
+The emitter stores both in `steps[N-1].log` / `steps[N-1].tokens`; clicking step 1–7 opens exactly
+that agent's output, and its token count appears beside the duration. Never estimate token usage —
+extract the printed count; omit `--tokens` only for phases that genuinely report none.
 
 | Step | Work | Actor | Notes |
 |---|---|---|---|

@@ -143,10 +143,21 @@ def sweep_record(filename, now, grace, handled):
         has_worker = bool(r.get("pid")) or bool((r.get("worker") or {}).get("pid"))
         # Abandoned no-pid run: emitted nothing for hours and has no fresh sidecar lease.
         # Auto-retire it to a terminal state so the board self-cleans (approved auto-cleanup).
+        # EXCEPT runs with a recorded PR: those are most likely awaiting review/closure — the
+        # conductor forgot the handoff/terminal emit. Retiring them as "abandoned" would hide a
+        # real open PR, so flag needsClosure instead and leave them visible as "quiet".
         if not has_worker and age > thresholds.ABANDON_SECS:
             lease_at = liveness.matching_lease_activity(r, LIVENESS_DIR) if liveness else None
             if lease_at is None or (now - lease_at) > thresholds.ABANDON_SECS:
                 if handled.get(r["id"]) != r.get("updatedAt"):
+                    if (r.get("pr") or {}).get("number"):
+                        if not r.get("needsClosure"):
+                            r["needsClosure"] = True
+                            save(r)
+                            logline(f"{r['id']}: silent {age}s with PR #{r['pr'].get('number')} open — "
+                                    "needs handoff/terminal emit, NOT auto-abandoned")
+                        handled[r["id"]] = r.get("updatedAt")
+                        return
                     r["status"] = "abandoned"
                     r["watchdog"] = {"at": now, "reason": "abandoned", "silentFor": age}
                     save(r)

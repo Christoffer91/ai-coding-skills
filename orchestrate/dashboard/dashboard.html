@@ -249,6 +249,9 @@
   .trow .act .x{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .trow .num{font-family:var(--mono);font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
   .trow .pill{justify-self:start;font-size:11px;padding:3px 8px}
+  /* status column is a fixed 100px track: never let a long pill paint into the title column */
+  .trow>span:first-child{min-width:0;overflow:hidden}
+  .trow>span:first-child .pill{max-width:100%;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle}
   .tdetail{border-bottom:1px solid var(--border)}
   .trow.open + .tdetail .detail{display:grid;grid-template-columns:1fr;gap:0 34px;border-top:0}
   @media (min-width:900px){.trow.open + .tdetail .detail{grid-template-columns:1fr 1fr}}
@@ -554,7 +557,7 @@ function trow(r){
   const aStr=age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
   const pills={needs:'<span class="pill needs">needs you</span>',handoff:'<span class="pill handoff">with claude</span>',
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled ${aStr}</span>`,
-    quiet:`<span class="pill quiet">◦ no recent update ${aStr}</span>`,
+    quiet:`<span class="pill quiet" title="no recent update">◦ quiet ${aStr}</span>`,
     live:'<span class="pill live"><span class="d"></span>running</span>',failed:'<span class="pill failed">failed</span>',
     incomplete:'<span class="pill needs">terminal emit missing</span>',
     done:'<span class="pill done">done ✓</span>',rejected:'<span class="pill rejected">rejected</span>',
@@ -612,7 +615,7 @@ function render(){
   if(cnt("quiet"))chips.push(`<span class="schip quiet"><span class="n">${cnt("quiet")}</span> quiet</span>`);
   if(cnt("incomplete"))chips.push(`<span class="schip stale"><span class="n">${cnt("incomplete")}</span> missing terminal emit</span>`);
   if(cnt("live"))chips.push(`<span class="schip liv"><span class="d"></span><span class="n">${cnt("live")}</span> live</span>`);
-  {const wk=Date.now()/1000-7*86400;const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(Number((r.metrics||{})["tokens.total"])||0):0),0);
+  {const wk=Date.now()/1000-7*86400;const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(Number((r.metrics||{})["tokens.total"])||runTok(r)||0):0),0);
   if(tok7d>0)chips.push(`<span class="schip" style="color:var(--faint)">≈${esc(fmtTokens(tok7d))} tokens · 7d</span>`);}
   if(cnt("handoff"))chips.push(`<span class="schip claude"><span class="n">${cnt("handoff")}</span> with claude</span>`);
   if(cnt("paused"))chips.push(`<span class="schip quiet"><span class="n">${cnt("paused")}</span> paused</span>`);

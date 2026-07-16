@@ -401,6 +401,7 @@ capture_tokens() { # <log> <role> [step_n]
   local log="$1" role="$2" step_n="${3:-}" tokens=""
   [[ -n "$role" && -f "$log" ]] || return 0
   tokens="$(awk '
+    /tokens used[: ]*[0-9]/ { s=$0; sub(/.*tokens used[: ]*/, "", s); gsub(/[,[:space:]]/, "", s); if (s ~ /^[0-9]+$/) last=s }
     prev ~ /tokens used/ { s=$0; gsub(/[,[:space:]]/, "", s); if (s ~ /^[0-9]+$/) last=s }
     { prev=$0 }
     END { if (last != "") print last }
@@ -589,8 +590,16 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
   cmd+=(-o "$out_file" -)
   while :; do
     local log cpid last_size=-1 idle=0 hung=0 rc=0 size worker_start worker_pgid last_act_t=0 act
-    log="$(mktemp -t orch-clog-XXXX).log"
+    # Durable per-step log under the run's artifact dir (survives reboot; feeds the
+    # dashboard's step 1-7 viewer). Falls back to TMPDIR only if the dir is unavailable.
+    if [[ -n "${ARTIFACT_DIR:-}" ]] && mkdir -p "$ARTIFACT_DIR" 2>/dev/null; then
+      log="$ARTIFACT_DIR/step-${step_n:-0}-${role:-codex}.log"
+      : > "$log"
+    else
+      log="$(mktemp -t orch-clog-XXXX).log"
+    fi
     [[ -n "$step_n" ]] && emit metric --id "$RUN_ID" --key log --value "$log"
+    [[ -n "$step_n" ]] && emit step --id "$RUN_ID" --n "$step_n" --log "$log"
     "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
     cpid=$!
     worker_start="$(proc_start "$cpid" || true)"

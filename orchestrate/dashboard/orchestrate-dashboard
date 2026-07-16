@@ -324,7 +324,9 @@ def step_log_for(record, n):
         candidate = os.path.join(art, name)
         if os.path.isfile(candidate):
             return candidate
-    return None
+    # Driver convention: durable per-step logs named step-<n>-<role>.log
+    matches = sorted(glob.glob(os.path.join(art, f"step-{n}-*.log")), key=os.path.getmtime, reverse=True)
+    return matches[0] if matches else None
 
 
 def steps_with_logs(record):

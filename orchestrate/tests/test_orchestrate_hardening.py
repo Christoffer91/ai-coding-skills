@@ -712,6 +712,9 @@ class DashboardTests(unittest.TestCase):
                 explicit = base / "custom.log"; explicit.write_text("x\n")
                 rec["steps"][0]["log"] = str(explicit)
                 self.assertEqual(self.dashboard.step_log_for(rec, 1), str(explicit))
+                # driver's durable per-step naming resolves via the glob alias
+                (base / "artifacts" / "r" / "step-5-review.log").write_text("review output\n")
+                self.assertTrue(self.dashboard.step_log_for(rec, 5).endswith("step-5-review.log"))
 
     def test_console_log_is_per_run_with_no_global_fallback(self):
         # A run's console must never fall back to another run's (or any global) log.
@@ -1125,6 +1128,26 @@ class WatchdogTests(unittest.TestCase):
              mock.patch.object(self.watchdog.os, "kill") as kill:
             self.assertEqual(self.watchdog.reap_recorded_worker(run_data), [])
         kill.assert_not_called()
+
+    def test_sweep_never_abandons_a_run_with_an_open_pr(self):
+        # A silent run with a recorded PR is awaiting review/closure — auto-"abandoned" would hide
+        # a real open PR. It gets needsClosure instead and stays visible.
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            runs = home / ".orchestrate" / "runs"; runs.mkdir(parents=True)
+            (home / ".orchestrate" / "answers").mkdir()
+            (home / ".orchestrate" / "liveness").mkdir()
+            old = int(time.time()) - 8 * 3600
+            (runs / "pr-run.json").write_text(json.dumps(
+                {"id": "pr-run", "status": "running", "updatedAt": old, "pid": None,
+                 "pr": {"number": 73, "url": "https://example.invalid/73"}}))
+            with mock.patch.object(self.watchdog, "RUNS", str(runs)), \
+                 mock.patch.object(self.watchdog, "ANS", str(home / ".orchestrate" / "answers")), \
+                 mock.patch.object(self.watchdog, "LIVENESS_DIR", str(home / ".orchestrate" / "liveness")):
+                self.watchdog.sweep(grace=180, handled={})
+            data = json.loads((runs / "pr-run.json").read_text())
+            self.assertEqual(data["status"], "running")      # NOT abandoned
+            self.assertTrue(data["needsClosure"])
 
     def test_sweep_auto_retires_abandoned_no_worker_run(self):
         with tempfile.TemporaryDirectory() as td:
