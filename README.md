@@ -10,6 +10,7 @@ A small collection of portable **Claude Code + OpenAI Codex CLI** skills. One to
 | [pipeline](pipeline/) | `/pipeline` | `$pipeline` | Standard delivery pipeline for non-trivial work: coverage matrix (security/risk/review/tests/docs), adaptive routing, verification gates, PR-ready output. Routes real implementation into `orchestrate`. |
 | [debug](debug/) | `/debug` | `$systematic-debugging` | Evidence-driven debugging. Hard bugs escalate to a dual-brain **council**: Claude + Codex research independently, hypotheses get falsified, candidate fixes race in disposable worktrees. Token-conscious, with a usage report. |
 | [critique](critique/) | `/critique` | (Codex ships its own) | Fair-but-rigorous critical-friend pass on an idea/plan/prompt/architecture before you commit — steelman, challenge, calibrated verdict. Modes: rubber-duck / critique / hard-challenge / decision. Optional parallel subagent lenses + independent second-model opinion. |
+| [chief-of-staff](chief-of-staff/) | `/chief-of-staff` | (Claude-only) | One chat orchestrates the session: decompose into parallel workstreams, delegate to background subagents, re-command mid-flight, route implementation into `orchestrate`, synthesize one answer. |
 
 ## Install a skill
 

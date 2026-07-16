@@ -28,6 +28,12 @@
       "description": "Fair-but-rigorous critical-friend pass on an idea, plan, prompt, or architecture before you commit \u2014 steelman, challenge, calibrated verdict. Modes: rubber-duck / critique / hard-challenge / decision. Can fan out parallel subagent lenses and pull an independent second-model opinion.",
       "source": "./critique/claude",
       "category": "development"
+    },
+    {
+      "name": "chief-of-staff",
+      "description": "Turn one chat into the session's chief of staff: decompose a broad goal into parallel workstreams, delegate to background subagents, re-command workers mid-flight, route implementation to the orchestrate loop, and synthesize one answer. Intra-session by design.",
+      "source": "./chief-of-staff/claude",
+      "category": "development"
     }
   ]
 }
