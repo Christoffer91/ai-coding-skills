@@ -8,7 +8,7 @@ driver at each step. No dependencies (Python 3 stdlib).
                             [--planner "Opus 4.8"] [--executor "gpt-5.6-sol · medium"] \
                             [--mode supervised] [--resume-command "…"] [--log /abs/run.log] \\
                             [--codex-session /abs/rollout.jsonl --codex-turn TURN]
-  orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending [--note "…"] [--actor "…"] [--log /abs/run.log] \\
+  orchestrate-status step   --id ID --n 1..7 --state active|done|fail|pending|skipped [--note "…"] [--actor "…"] [--log /abs/run.log] \\
                             [--codex-session /abs/rollout.jsonl --codex-turn TURN]
   orchestrate-status pr     --id ID --number N --url U [--state OPEN]
   orchestrate-status metric --id ID --key tests --value "12/12"
@@ -30,6 +30,7 @@ driver at each step. No dependencies (Python 3 stdlib).
 """
 import argparse
 import ast
+import fcntl
 import json
 import os
 import platform
@@ -52,7 +53,11 @@ LIVENESS = os.path.join(BASE, "liveness")
 STEP_NAMES = ["Plan", "Critique plan", "Implement", "Open PR", "Review PR", "Apply edits", "Deploy"]
 STEP_ACTORS = ["Claude", "gpt-5.6-sol", "gpt-5.6-sol·med", "driver", "Claude", "gpt-5.6-sol·med", "gated"]
 MAX_RESUME_COMMAND_LENGTH = 1000
-TERMINAL_STATUSES = frozenset(("done", "failed", "fail", "handoff", "rejected"))
+TERMINAL_STATUSES = frozenset(("done", "failed", "rejected", "abandoned"))
+ACTIVE_STATUSES = frozenset(("running", "review"))
+CLOSABLE_STATUSES = ACTIVE_STATUSES | frozenset(("await", "paused", "handoff", "fail"))
+STEP_STATES = ("pending", "active", "done", "fail", "skipped")
+PR_STATES = ("OPEN", "CLOSED", "MERGED", "UNKNOWN")
 
 
 def resume_command_arg(value):
@@ -73,6 +78,14 @@ def path(rid):
     rid = os.path.basename(rid)
     return os.path.join(RUNS, rid + ".json")
 
+
+def acquire_run_lock(rid):
+    """Serialize one run's read-modify-write operations across emitter processes."""
+    os.makedirs(RUNS, exist_ok=True)
+    handle = open(path(rid) + ".lock", "a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
 def load(rid):
     try:
         with open(path(rid)) as fh:
@@ -84,7 +97,7 @@ def save(r):
     os.makedirs(RUNS, exist_ok=True)
     r["updatedAt"] = int(time.time())
     target = path(r["id"])
-    tmp = target + ".tmp"
+    tmp = f"{target}.tmp.{os.getpid()}"
     with open(tmp, "w") as fh:
         json.dump(r, fh, indent=2)
     os.replace(tmp, target)
@@ -94,6 +107,44 @@ def need(rid):
     if r is None:
         sys.exit(f"orchestrate-status: no run '{rid}' (run `start` first)")
     return r
+
+
+def require_source_status(record, command, allowed):
+    """Reject lifecycle mutations outside their explicit source states."""
+    status = record.get("status")
+    if status not in allowed:
+        sys.exit(f"orchestrate-status: {command} is not allowed from run status {status!r}")
+
+
+def consume_gate_answer(rid, answer_file):
+    """Consume one gate answer under the run lock; preserve a newer post-lock answer."""
+    with acquire_run_lock(rid):
+        try:
+            with open(answer_file) as fh:
+                answer = json.load(fh)
+        except FileNotFoundError:
+            return None, None
+        except Exception:
+            answer = {}
+        choice = answer.get("choice", "") if isinstance(answer, dict) else ""
+        record = load(rid)
+        labels = {option.get("label") for option in ((record or {}).get("gate") or {}).get("options", [])}
+        if not record or choice not in labels:
+            try:
+                os.remove(answer_file)
+            except OSError:
+                pass
+            return None, f"orchestrate-status: invalid gate choice {choice!r}; waiting for one of {sorted(labels)!r}"
+        record["lastGateAnswer"] = {"kind": (record.get("gate") or {}).get("kind"), "choice": choice}
+        record["gate"] = None
+        if record.get("status") == "await":
+            record["status"] = "running"
+        save(record)
+        try:
+            os.remove(answer_file)
+        except OSError:
+            pass
+        return choice, None
 
 
 def codex_binding(args):
@@ -232,7 +283,8 @@ def main():
                    help="exact Codex turn locator; only an opaque reference is stored")
 
     p = sub.add_parser("step"); common(p)
-    p.add_argument("--n", type=int, required=True); p.add_argument("--state", default=None)
+    p.add_argument("--n", type=int, required=True)
+    p.add_argument("--state", choices=STEP_STATES, default=None)
     p.add_argument("--note", default=None); p.add_argument("--actor", default=None); p.add_argument("--pid", type=int, default=None)
     p.add_argument("--log", default=None, help="absolute path to THIS run's console/output log")
     p.add_argument("--tokens", type=int, default=None, help="tokens this step's agent used")
@@ -242,7 +294,8 @@ def main():
                    help="exact Codex turn locator; only an opaque reference is stored")
 
     p = sub.add_parser("pr"); common(p)
-    p.add_argument("--number", required=True); p.add_argument("--url", required=True); p.add_argument("--state", default="OPEN")
+    p.add_argument("--number", required=True); p.add_argument("--url", required=True)
+    p.add_argument("--state", type=str.upper, choices=PR_STATES, default="OPEN")
 
     p = sub.add_parser("metric"); common(p); p.add_argument("--key", required=True); p.add_argument("--value", required=True)
 
@@ -293,6 +346,10 @@ def main():
 
     a = ap.parse_args()
 
+    # Keep the descriptor alive for the full command. Process exit releases the advisory lock,
+    # including on argparse/sys.exit error paths.
+    run_lock = None if a.cmd in ("overrides", "wait") else acquire_run_lock(a.id)
+
     if a.cmd == "overrides":
         try:
             if a.override_cmd == "set":
@@ -334,14 +391,7 @@ def main():
     elif a.cmd == "step":
         r = need(a.id); apply_codex_binding(r, codex_binding(a)); i = a.n - 1
         if not (0 <= i < 7): sys.exit("--n must be 1..7")
-        inactive = r.get("status")
-        if inactive == "await":
-            sys.exit("orchestrate-status: run is awaiting a human gate; answer it before emitting a step")
-        if inactive == "paused" or inactive in TERMINAL_STATUSES:
-            sys.exit(
-                f"orchestrate-status: run is {inactive}; use 'resume --id {r['id']} --reason ...' "
-                "before emitting another step"
-            )
+        require_source_status(r, "step", ACTIVE_STATUSES)
         now = int(time.time())
         prev = r["steps"][i].get("state")
         # --state is optional: a metadata-only update (e.g. --tokens or --log) leaves state intact.
@@ -368,7 +418,10 @@ def main():
         save(r)
 
     elif a.cmd == "pr":
-        r = need(a.id); r["pr"] = {"number": a.number, "url": a.url, "state": a.state}; save(r)
+        r = need(a.id)
+        r["pr"] = {"number": a.number, "url": a.url, "state": a.state,
+                   "checkedAt": int(time.time())}
+        save(r)
 
     elif a.cmd == "metric":
         r = need(a.id); r.setdefault("metrics", {})[a.key] = a.value; save(r)
@@ -385,11 +438,13 @@ def main():
 
     elif a.cmd == "worker":
         r = need(a.id)
+        require_source_status(r, "worker", ACTIVE_STATUSES)
         r["worker"] = {"pid": a.pid, "startedAt": a.pid_start, "pgid": a.pgid, "cwd": a.cwd}
         save(r)
 
     elif a.cmd == "gate":
         r = need(a.id)
+        require_source_status(r, "gate", ACTIVE_STATUSES)
         opts = []
         for o in a.option:
             lbl, _, tag = o.partition(":")
@@ -413,27 +468,13 @@ def main():
         deadline = time.time() + a.timeout if a.timeout > 0 else None
         while True:
             if os.path.exists(af):
-                try:
-                    with open(af) as fh: ans = json.load(fh)
-                except Exception:
-                    ans = {}
-                choice = ans.get("choice", "")
-                r = load(a.id)
-                labels = {o.get("label") for o in ((r or {}).get("gate") or {}).get("options", [])}
-                if not r or choice not in labels:
-                    print(f"orchestrate-status: invalid gate choice {choice!r}; waiting for one of {sorted(labels)!r}", file=sys.stderr)
-                    try: os.remove(af)
-                    except OSError: pass
+                choice, error = consume_gate_answer(a.id, af)
+                if error:
+                    print(error, file=sys.stderr)
                     continue
-                if r:
-                    r["lastGateAnswer"] = {"kind": (r.get("gate") or {}).get("kind"), "choice": choice}
-                    r["gate"] = None
-                    if r.get("status") == "await": r["status"] = "running"
-                    save(r)
-                try: os.remove(af)  # consume
-                except OSError: pass
-                print(choice)  # caller reads the choice from stdout
-                return
+                if choice is not None:
+                    print(choice)  # caller reads the choice from stdout
+                    return
             if deadline and time.time() > deadline:
                 sys.exit(2)  # timed out, not answered
             time.sleep(a.interval)
@@ -445,12 +486,25 @@ def main():
         # Without this, a polluted status never matches the dashboard's terminal check and
         # the run lingers as a zombie "running"/"quiet" card forever.
         terminal = "failed" if str(a.status).strip().lower() in ("failed", "fail") else "done"
+        if terminal == "done" and r.get("status") == "handoff":
+            sys.exit("orchestrate-status: handoff must be explicitly resumed and reviewed before done")
+        if terminal == "done" and any(step.get("state") == "fail" for step in r.get("steps", [])):
+            sys.exit("orchestrate-status: cannot mark done while a step is failed")
+        require_source_status(r, "done", ACTIVE_STATUSES)
+        now = int(time.time())
+        for step in r.get("steps", []):
+            if step.get("state") == "active":
+                step["state"] = "done" if terminal == "done" else "fail"
+                step["endedAt"] = now
+            elif step.get("state") == "pending":
+                step["state"] = "skipped"
         r["steps"][6]["state"] = "done" if terminal == "done" else "fail"
         r["step"] = 7; r["status"] = terminal; r["gate"] = None; save(r)
         clear_liveness(r["id"])
 
     elif a.cmd == "handoff":
         r = need(a.id)
+        require_source_status(r, "handoff", ACTIVE_STATUSES)
         r["status"] = "handoff"; r["pid"] = None; r["worker"] = None; r["gate"] = None
         r["checkpoint"] = None
         r["review"] = {"baton": a.baton, "command": a.review_command,
@@ -463,6 +517,7 @@ def main():
 
     elif a.cmd == "fail":
         r = need(a.id)
+        require_source_status(r, "fail", CLOSABLE_STATUSES)
         i = max(0, min(len(r.get("steps", [])) - 1, int(r.get("step", 1)) - 1))
         if r.get("steps"): r["steps"][i]["state"] = "fail"
         r["status"] = "failed"; r["gate"] = None; r["worker"] = None
@@ -472,6 +527,7 @@ def main():
 
     elif a.cmd == "pause":
         r = need(a.id)
+        require_source_status(r, "pause", ACTIVE_STATUSES | frozenset(("await",)))
         # A displayed gate is already the authoritative inactive ``await`` state;
         # otherwise record an explicit paused state instead of leaving ``running``.
         r["status"] = "await" if r.get("gate") else "paused"; r["pid"] = None; r["worker"] = None
@@ -500,6 +556,7 @@ def main():
 
     elif a.cmd == "cancel":
         r = need(a.id)
+        require_source_status(r, "cancel", CLOSABLE_STATUSES)
         r["status"] = "rejected"; r["pid"] = None; r["worker"] = None; r["gate"] = None
         r["checkpoint"] = None; r["reason"] = a.reason
         save(r)
@@ -522,6 +579,7 @@ def main():
 
     elif a.cmd == "heartbeat":
         r = need(a.id)
+        require_source_status(r, "heartbeat", ACTIVE_STATUSES)
         if a.pid: r["pid"] = a.pid
         save(r)  # bumps updatedAt to signal liveness
 

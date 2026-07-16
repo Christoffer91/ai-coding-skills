@@ -74,6 +74,9 @@ codex exec resume <session-id> -c model_reasoning_effort=medium \  # medium is i
 6. Commit linked-worktree edits outside the sandbox, push to the same PR, and repeat review. Stop and escalate after `maxIterations` (default 3).
 7. For deploy, apply `/risk-assess` plus `references/auto-deploy-safety.md`. Merge/deploy only when user-set `deploy_authorized=true`, risk is low, CI is green, the PR is mergeable, and a deploy mechanism is configured. Otherwise hand deploy to the user.
 8. **Terminal emit — mandatory.** However steps 5–7 end, close the run on the dashboard:
+   refresh the recorded PR first from the verified `gh pr view` result with
+   `orchestrate-status pr --id <id> --number <n> --url <url> --state <state>`, where state is
+   `OPEN|CLOSED|MERGED|UNKNOWN`; never infer merge from run completion. Then emit
    `orchestrate-status done --id <id>` after a merge/deploy or a clean hand-back to the user,
    `done --status failed` (or `fail`) on the iteration cap or an abandoned round. Leaving the run
    in `handoff`/`running` after the work is finished is the false-"stalled" bug.
@@ -97,8 +100,9 @@ Emit discipline is not optional telemetry hygiene — it is what the card render
 - **Fresh id per round.** A new topic or a new round on the same topic gets a new `start` with a new
   id (suffix a round number if the topic repeats). Reusing an old id makes the card show the old
   branch and step forever.
-- **Terminal emit, always.** Every round ends with `done` (or `fail`), including handoffs and
-  abandoned rounds — a finished run without a terminal emit keeps rendering as active.
+- **Lifecycle emit, always.** Planning/execution stops at durable `handoff`; do not immediately emit
+  `done` or create a second review run. The explicit review command resumes that same run, and its
+  completed review leg ends with exactly one `done` (or `fail`). Aborted work must also close honestly.
 - The dashboard infers "stalled" from time-since-last-emit; a completed round MUST emit done/fail,
   and a new round MUST start a new id, or the card will misreport.
 - **Own log, always.** Pass `--log` on `start` (or `step`) pointing at THIS run's log file, and

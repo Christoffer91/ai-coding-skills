@@ -9,10 +9,11 @@ ESCALATES (marks the run `needsRestart` + logs to
 Restart button or re-run the topic manually.
 
 Usage:  orchestrate-watchdog [--poll 30] [--grace 180] [--once]
-Env:    ORCH_STALE_SECS (default 75), ORCH_WATCH_POLL, ORCH_WATCH_GRACE
+Env:    ORCH_STALE_SECS (default 75), ORCH_WATCH_POLL, ORCH_WATCH_GRACE,
+        ORCH_WATCHDOG_LOG (default ~/.orchestrate/watchdog.log)
 No dependencies (Python 3 stdlib). Safe to run alongside the dashboard.
 """
-import os, glob, json, time, signal, subprocess, argparse, sys
+import os, glob, json, time, signal, subprocess, argparse, sys, fcntl
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # resolve ~/.local/bin symlink
 import thresholds
@@ -26,7 +27,6 @@ BASE = os.path.join(HOME, ".orchestrate")
 RUNS = os.path.join(BASE, "runs")
 ANS  = os.path.join(BASE, "answers")
 LIVENESS_DIR = os.path.join(BASE, "liveness")
-LOG  = os.path.join(BASE, "watchdog.log")
 
 
 def pid_alive(pid):
@@ -98,7 +98,7 @@ def reap_recorded_worker(run):
 
 def save(r):
     target = os.path.join(RUNS, os.path.basename(r["id"]) + ".json")
-    tmp = target + ".tmp"
+    tmp = f"{target}.tmp.{os.getpid()}"
     with open(tmp, "w") as fh:
         json.dump(r, fh, indent=2)
     os.replace(tmp, target)
@@ -108,25 +108,34 @@ def logline(msg):
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"{stamp} {msg}", flush=True)
     try:
-        with open(LOG, "a") as fh:
+        log_path = os.environ.get("ORCH_WATCHDOG_LOG", os.path.join(BASE, "watchdog.log"))
+        parent = os.path.dirname(log_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(log_path, "a") as fh:
             fh.write(f"{stamp} {msg}\n")
     except Exception:
         pass
 
 
-def sweep(grace, handled):
-    now = int(time.time())
-    for f in glob.glob(os.path.join(RUNS, "*.json")):
+def sweep_record(filename, now, grace, handled):
+    """Inspect and possibly update one run while holding the emitter-compatible lock."""
+    os.makedirs(RUNS, exist_ok=True)
+    with open(filename + ".lock", "a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            with open(f) as fh: r = json.load(fh)
-        except Exception:
-            continue
+            with open(filename) as fh:
+                r = json.load(fh)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return
+        if not isinstance(r, dict):
+            return
         status = r.get("status")
-        if status in ("done", "failed", "fail", "handoff", "await", "paused", "rejected"):
-            continue
-        answered = os.path.exists(os.path.join(ANS, os.path.basename(f)))
+        if status in ("done", "failed", "fail", "handoff", "await", "paused", "rejected", "abandoned"):
+            return
+        answered = os.path.exists(os.path.join(ANS, os.path.basename(filename)))
         if r.get("gate") and not answered:
-            continue  # waiting on a human — not a liveness concern
+            return  # waiting on a human — not a liveness concern
         age = now - int(r.get("updatedAt", now))
         alive = pid_alive(r.get("pid"))
         dead = alive is False
@@ -143,14 +152,14 @@ def sweep(grace, handled):
                     save(r)
                     handled[r["id"]] = r.get("updatedAt")
                     logline(f"{r['id']}: no emit for {age}s and no live lease — auto-retired (abandoned)")
-                continue
+                return
         # A no-pid model-driven run that emits only at transitions has no worker to reap and no
         # evidence of a hang — its silence is "quiet", not "needsRestart". Only act when there is a
         # real worker: a live/dead pid or a recorded reapable worker.
         if not (dead or (stalled and has_worker)):
-            continue
+            return
         if handled.get(r["id"]) == r.get("updatedAt"):
-            continue  # already escalated this exact state
+            return  # already escalated this exact state
         reaped = reap_recorded_worker(r)
         r["needsRestart"] = True
         r["watchdog"] = {"at": now, "reason": "exited" if dead else "stalled", "reaped": reaped}
@@ -158,6 +167,12 @@ def sweep(grace, handled):
         handled[r["id"]] = r.get("updatedAt")
         logline(f"{r['id']}: {'worker exited' if dead else f'stalled {age}s'}; "
                 f"reaped codex {reaped or '(none)'}; flagged needsRestart")
+
+
+def sweep(grace, handled):
+    now = int(time.time())
+    for filename in glob.glob(os.path.join(RUNS, "*.json")):
+        sweep_record(filename, now, grace, handled)
 
 
 def main():

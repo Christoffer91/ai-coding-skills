@@ -1,10 +1,19 @@
 # Claude Final Review Gate
 
-Use this only for a bounded, secret-free final review after outbound authorization is established. An explicit user invocation of `$orchestrate` supplies invocation-scoped `external_review_allowance: unused` for the workflow's single selected external review pass; implicit routing or a request without explicit `$orchestrate` still requires separate explicit approval. Internal `orchestrate_reviewer` remains the default and the fallback when authorization, authentication, entitlement, input bounds, or model verification is absent.
+Use this only for a bounded, secret-free final review after outbound authorization is established. An
+explicit user invocation of `$orchestrate` supplies invocation-scoped
+`external_review_allowance: unused` for the workflow's single selected external review pass. Under a
+valid `PR_READY` action grant, reserve and dispatch that pass for final review without another approval prompt.
+Implicit routing or a request without explicit `$orchestrate` still requires separate explicit
+approval. Internal `orchestrate_reviewer` remains the fallback when authorization, authentication,
+entitlement, input bounds, output validity, or model verification is absent.
 
 ## Precedence
 
-For one review pass, the approved external lane replaces the internal reviewer; it is not an automatic second opinion. Running both reviewers for comparison is an additional paid call and requires separate explicit approval. Any later material diff requires a fresh review decision and fresh inputs.
+For one review pass, the approved external lane replaces the internal reviewer; it is not an automatic
+second opinion. Running both reviewers for comparison is an additional paid call and requires separate explicit approval.
+A review-triggered in-scope fix uses fresh inputs and the appropriate authorized
+reviewer within the bounded fix loop; a material scope change invalidates the action grants.
 
 ## Safe command
 
@@ -52,6 +61,10 @@ Do not substitute planner rationale, hidden reasoning, earlier diffs, full raw l
 
 Ask Claude to review only against the approved spec and fresh evidence. It must categorize findings as `blocking`, `notable`, or `nit`, cite the affected file/behavior, explain the concrete failure mode, and return an overall `PASS` or `CHANGES_REQUIRED` verdict.
 
-Codex validates the findings before workflow step 10. Only validated blocking findings return to the executor; notable and nit findings remain recorded evidence unless they expose a spec or risk change. Claude does not approve execution, merging, or deployment.
+Codex validates the findings before workflow step 10. Only validated blocking findings return to the
+executor; notable and nit findings remain recorded evidence unless they expose a spec or risk change.
+Codex fixes accepted in-scope blockers, rejects false findings with concrete code evidence, and reruns
+affected verification. The user is not a mandatory review runner. Claude does not approve execution,
+merging, or deployment.
 
 If outbound data policy rejects the call before Claude starts, record `EXTERNAL_REVIEW_BLOCKED:data-policy` and follow [claude-cli-preflight.md](claude-cli-preflight.md) with zero Claude retries. Optional external review falls back immediately to `orchestrate_reviewer`. If Claude review is an explicit success criterion, pause at the single A/B/C decision instead; do not poll a baton or review file.

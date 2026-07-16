@@ -28,7 +28,11 @@ EXPECTED_SCENARIOS = {
     "explicit-orchestrate-internal-only",
     "failure-escalation",
     "approved-plan-resume",
-    "pr-ready-stop-gate",
+    "local-explicit-no-git-write",
+    "pr-ready-happy-path",
+    "pr-ready-merge-authorized",
+    "merge-is-deploy-gate",
+    "authorization-invalidated-on-scope-change",
 }
 
 
@@ -86,6 +90,13 @@ def main() -> int:
         "eligible Fable-to-Opus fallback",
         "new explicit `$orchestrate` invocation",
         "preflight failure",
+        "Goal-scoped action authorization",
+        "Never ask again",
+        "user an obligatory reviewer",
+        "merge triggers publishing or production deployment",
+        "matching goal-scoped grant",
+        "incidental mentions, questions, examples, and negated instructions do not",
+        "grants only that named action",
     ):
         if required not in skill_text:
             errors.append(f"SKILL.md missing contract text: {required}")
@@ -314,17 +325,17 @@ def main() -> int:
         expected_sequence = [
             {
                 "stage": "plan-critique",
-                "authorization": "standing-unused-allowance",
-                "allowance_after_dispatch": "consumed",
+                "reviewer": "internal-orchestrate-plan-critic",
+                "allowance_after_stage": "unused",
             },
             {
                 "stage": "final-review",
-                "standing_dispatch_refused": True,
-                "required_authorization": "separate-explicit-outbound-approval-or-new-explicit-orchestrate-invocation",
+                "authorization": "standing-unused-allowance",
+                "allowance_after_dispatch": "consumed",
             },
         ]
         if explicit_external.get("review_sequence") != expected_sequence:
-            errors.append("a standing-authorized plan dispatch must consume the allowance and gate later final review")
+            errors.append("the default route must preserve the one external allowance for final review")
         expected_exclusions = {
             "extra-or-comparative-paid-calls",
             "secrets-customer-data-or-raw-transcripts",
@@ -388,12 +399,63 @@ def main() -> int:
             or resume.get("canonical_state_count") != 1
         ):
             errors.append("approved plan resume must skip replanning/recritique and retain one valid canonical state")
-        pr_ready = by_id["pr-ready-stop-gate"]
+        local_explicit = by_id["local-explicit-no-git-write"]
+        local_grants = local_explicit.get("action_grants", {})
         if (
-            pr_ready.get("external_action_requires_explicit_authorization") is not True
-            or pr_ready.get("standing_external_review_authorization_covers_pr") is not False
+            local_explicit.get("explicit_skill_invocation") is not True
+            or local_explicit.get("negated_merge_mention") is not True
+            or local_explicit.get("git_write_executed") is not False
+            or local_explicit.get("merge_grant_inferred") is not False
+            or local_grants.get("external_final_review") is not True
+            or any(local_grants.get(action) is not False for action in ("commit", "push", "pr_write", "merge", "deploy"))
         ):
-            errors.append("PR_READY scenario must gate external actions")
+            errors.append("bare explicit LOCAL invocation grants one final review but no GitHub writes, merge, or deploy")
+        pr_ready = by_id["pr-ready-happy-path"]
+        pr_grants = pr_ready.get("action_grants", {})
+        expected_flow = [
+            "implement", "verify", "commit", "push", "pr-write", "claude-final-review",
+            "validate-findings", "fix-blockers", "reverify", "push-fixes",
+        ]
+        if (
+            any(pr_grants.get(action) is not True for action in ("commit", "push", "pr_write", "external_final_review"))
+            or pr_grants.get("merge") is not False
+            or pr_grants.get("deploy") is not False
+            or pr_ready.get("flow") != expected_flow
+            or pr_ready.get("redundant_approval_prompts") != 0
+            or pr_ready.get("user_is_mandatory_reviewer") is not False
+            or pr_ready.get("external_failure_fallback") != "internal-reviewer"
+            or pr_ready.get("review_fix_round_limit") != 3
+        ):
+            errors.append("PR_READY happy path must complete PR/review/fix without redundant human gates")
+        merge = by_id["pr-ready-merge-authorized"]
+        if (
+            merge.get("exact_active_goal_merge_grant") is not True
+            or merge.get("required_checks_green") is not True
+            or merge.get("final_review_validated") is not True
+            or merge.get("blocking_findings") != 0
+            or merge.get("mergeable") is not True
+            or merge.get("merge_is_deploy") is not False
+            or merge.get("merge_executed") is not True
+            or merge.get("redundant_approval_prompts") != 0
+        ):
+            errors.append("authorized merge must execute only after every non-deploy merge gate is green")
+        merge_deploy = by_id["merge-is-deploy-gate"]
+        if (
+            merge_deploy.get("merge_is_deploy") is not True
+            or merge_deploy.get("deploy_grant") is not False
+            or merge_deploy.get("merge_executed") is not False
+            or merge_deploy.get("terminal") != "AWAIT_DEPLOY_AUTHORIZATION"
+        ):
+            errors.append("merge-triggered deploy must retain a separate deploy gate")
+        invalidated = by_id["authorization-invalidated-on-scope-change"]
+        if (
+            invalidated.get("initial_pr_write_grant") is not True
+            or invalidated.get("material_scope_change") is not True
+            or invalidated.get("affected_grants_invalidated") is not True
+            or invalidated.get("additional_push_executed") is not False
+            or invalidated.get("merge_executed") is not False
+        ):
+            errors.append("material scope change must invalidate affected action grants before more writes")
 
     if errors:
         print("[ERROR] Orchestrate contract validation failed:")
@@ -401,7 +463,7 @@ def main() -> int:
             print(f"- {error}")
         return 1
 
-    print("[OK] Adaptive pipeline profiles, spec/critique gates, model roles, and thirteen scenarios are aligned.")
+    print("[OK] Adaptive pipeline profiles, goal-scoped action grants, model roles, and seventeen scenarios are aligned.")
     return 0
 
 

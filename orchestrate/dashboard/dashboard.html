@@ -398,7 +398,7 @@ function healthOf(r){
   if(r.health) return r.health==="exited"?"exited":r.health;    // server truth wins
   return "live";
 }
-function stateOf(r){ // one visual state per card: done|failed|rejected|paused|needs|handoff|dead|stale|live
+function stateOf(r){ // one visual state per card
   if(r.status==="done")return"done";
   if(r.status==="failed"||r.status==="fail")return"failed";
   if(r.status==="rejected")return"rejected";
@@ -407,7 +407,7 @@ function stateOf(r){ // one visual state per card: done|failed|rejected|paused|n
   if(isGateOpen(r))return"needs";
   if(r.status==="handoff"||healthOf(r)==="handoff")return"handoff";
   const h=healthOf(r);
-  return h==="exited"?"dead":h==="stale"?"stale":h==="quiet"?"quiet":"live";
+  return h==="exited"?"dead":h==="stale"?"stale":h==="quiet"?"quiet":h==="incomplete"?"incomplete":"live";
 }
 
 function recoveryAction(r,st){
@@ -421,13 +421,15 @@ function recoveryAction(r,st){
   return"";
 }
 
-/* PR chip trusts run status over stale pr.state */
+/* PR labels come only from recorded PR metadata; run completion does not imply merge. */
 function prBit(r){
   if(!r.pr)return `<span class="chip">no PR yet</span>`;
-  const merged=r.status==="done"||/merged/i.test(r.pr.state||"");
+  const merged=/merged/i.test(r.pr.state||"");
   const closed=/closed/i.test(r.pr.state||"")&&!merged;
-  const label=merged?`#${r.pr.number} merged`:closed?`#${r.pr.number} closed`:`#${r.pr.number} ${String(r.pr.state||"open").toLowerCase()}`;
-  return `<a class="pr ${merged||closed?'merged':''}" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener">${esc(label)} ↗</a>`;
+  const state=String(r.pr.state||"unknown").toLowerCase();
+  const freshness=r.pr.stale?" · stale":"";
+  const label=(merged?`#${r.pr.number} merged`:closed?`#${r.pr.number} closed`:`#${r.pr.number} ${state}`)+freshness;
+  return `<a class="pr ${merged||closed?'merged':''}" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener" data-stop>${esc(label)} ↗</a>`;
 }
 
 /* signature: relay track — segments carry the color of the leg they lead into */
@@ -497,12 +499,13 @@ function card(r,compact){
   const st=stateOf(r), cur=curStep(r), ck=cur?kindOf(cur.actor):"neutral";
   const age=r.staleSecs!=null?r.staleSecs:Math.max(0,Math.round(Date.now()/1000-(r.updatedAt||0)));
   const aStr=age<3600?Math.round(age/60)+"m":Math.floor(age/3600)+"h";
-  const pills={done:'<span class="pill done">merged ✓</span>',failed:'<span class="pill failed">failed</span>',
+  const pills={done:'<span class="pill done">done ✓</span>',failed:'<span class="pill failed">failed</span>',
     rejected:'<span class="pill rejected">rejected</span>',
     paused:'<span class="pill paused">paused</span>',
     needs:'<span class="pill needs">needs you</span>',handoff:'<span class="pill handoff">with Claude · review</span>',
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled · ${aStr}</span>`,
     quiet:`<span class="pill quiet">◦ no recent update · ${aStr}</span>`,
+    incomplete:'<span class="pill needs">terminal emit missing</span>',
     live:'<span class="pill live"><span class="d"></span>running</span>'};
   const m=r.metrics||{};
   let activity="";
@@ -521,7 +524,7 @@ function card(r,compact){
     const command=(r.review&&r.review.command)||`/orchestrate review ${r.topic}`;
     actions=`<div class="actions"><button class="btn sm" data-copy-review="${esc(command)}">⧉ copy review command</button></div>`;
   } else actions=recoveryAction(r,st);
-  const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",paused:"var(--faint)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",live:"var(--live)"}[st];
+  const edge={done:"var(--done)",failed:"var(--fail)",rejected:"var(--muted)",paused:"var(--faint)",needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",incomplete:"var(--await)",live:"var(--live)"}[st];
   const slim=compact&&!open[r.id];
   const statsBlock=slim
     ?`<div class="cline"><span><b>${r.step||0}</b>/7</span><span>${r.startedAt?dur(r.startedAt):"—"}</span><span>upd ${r.updatedAt?ago(r.updatedAt):"—"}</span>${m.tests?`<span>${esc(m.tests)}</span>`:""}${r.pr?prBit(r):""}</div>`
@@ -553,9 +556,10 @@ function trow(r){
     dead:'<span class="pill dead">■ not running</span>',stale:`<span class="pill stale">⚠ stalled ${aStr}</span>`,
     quiet:`<span class="pill quiet">◦ no recent update ${aStr}</span>`,
     live:'<span class="pill live"><span class="d"></span>running</span>',failed:'<span class="pill failed">failed</span>',
-    done:'<span class="pill done">merged ✓</span>',rejected:'<span class="pill rejected">rejected</span>',
+    incomplete:'<span class="pill needs">terminal emit missing</span>',
+    done:'<span class="pill done">done ✓</span>',rejected:'<span class="pill rejected">rejected</span>',
     paused:'<span class="pill paused">paused</span>'};
-  const edge={needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",live:"var(--live)",failed:"var(--fail)",done:"var(--done)",rejected:"var(--muted)",paused:"var(--faint)"}[st];
+  const edge={needs:"var(--await)",handoff:"var(--claude)",dead:"var(--fail)",stale:"var(--await)",quiet:"var(--border-strong)",incomplete:"var(--await)",live:"var(--live)",failed:"var(--fail)",done:"var(--done)",rejected:"var(--muted)",paused:"var(--faint)"}[st];
   const actTxt=cur?`${cur.name}${cur.note?" — "+cur.note:""}`:"";
   let acts="";
   if(["stale","dead","failed"].includes(st))acts=recoveryAction(r,st);
@@ -575,18 +579,29 @@ function hrow(r){
   const st=stateOf(r);
   const total=r.startedAt?span(r.startedAt,r.updatedAt||undefined):"—";
   const when=r.updatedAt?ago(r.updatedAt):"";
-  const pr=r.pr?`<a class="pr merged" href="${esc(safeUrl(r.pr.url))}" target="_blank" rel="noopener" data-stop>#${esc(r.pr.number)} ↗</a>`:"";
-  const pill=st==="done"?'<span class="pill done">merged ✓</span>':st==="failed"?'<span class="pill failed">failed</span>':st==="abandoned"?'<span class="pill quiet">◦ abandoned</span>':'<span class="pill rejected">rejected</span>';
+  const pr=r.pr?prBit(r):"";
+  const pill=st==="done"?'<span class="pill done">done ✓</span>':st==="failed"?'<span class="pill failed">failed</span>':st==="abandoned"?'<span class="pill quiet">◦ abandoned</span>':'<span class="pill rejected">rejected</span>';
   return `<div class="hrow ${open[r.id]?'open':''}" data-toggle="${esc(r.id)}" tabindex="0" role="button" aria-expanded="${!!open[r.id]}">
       <span class="hd ${st}"></span>
       <span class="ht">${esc(r.title)}<small>${esc(r.repo)}</small></span>
       ${pr}<span class="hmeta">${total} · ${when}</span>${pill}<span class="caret">▸</span></div>
     <div class="hdetail">${recoveryAction(r,st)}${detail(r)}</div>`;
 }
+function runSection(title,runs){
+  if(!runs.length)return "";
+  const heading=`<h2>${title} <span class="count-pill">${runs.length}</span></h2>`;
+  if(runs.length<4)return heading+`<div class="grid">`+runs.map(r=>card(r,false)).join("")+`</div>`;
+  return heading+`<div class="tbl">
+    <div class="trow thead"><span>status</span><span>run</span><span>relay</span><span>activity</span><span style="text-align:right">step</span><span style="text-align:right">elapsed</span><span style="text-align:right">updated</span><span></span></div>`
+    +runs.map(trow).join("")+`</div>`;
+}
 function render(){
   const gated=RUNS.filter(isGateOpen);
   const hist=RUNS.filter(r=>!isGateOpen(r)&&isTerminal(r));
-  const rest=RUNS.filter(r=>!isGateOpen(r)&&!isTerminal(r));
+  const openRuns=RUNS.filter(r=>!isGateOpen(r)&&!isTerminal(r));
+  const waitingStates=new Set(["handoff","paused","quiet"]);
+  const waiting=openRuns.filter(r=>waitingStates.has(stateOf(r)));
+  const active=openRuns.filter(r=>!waitingStates.has(stateOf(r)));
   const states=RUNS.map(stateOf);
   const cnt=s=>states.filter(x=>x===s).length;
   const chips=[];
@@ -595,6 +610,7 @@ function render(){
   if(cnt("failed"))chips.push(`<span class="schip dead"><span class="n">${cnt("failed")}</span> failed</span>`);
   if(cnt("stale"))chips.push(`<span class="schip stale"><span class="n">${cnt("stale")}</span> stalled</span>`);
   if(cnt("quiet"))chips.push(`<span class="schip quiet"><span class="n">${cnt("quiet")}</span> quiet</span>`);
+  if(cnt("incomplete"))chips.push(`<span class="schip stale"><span class="n">${cnt("incomplete")}</span> missing terminal emit</span>`);
   if(cnt("live"))chips.push(`<span class="schip liv"><span class="d"></span><span class="n">${cnt("live")}</span> live</span>`);
   {const wk=Date.now()/1000-7*86400;const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(Number((r.metrics||{})["tokens.total"])||0):0),0);
   if(tok7d>0)chips.push(`<span class="schip" style="color:var(--faint)">≈${esc(fmtTokens(tok7d))} tokens · 7d</span>`);}
@@ -604,26 +620,20 @@ function render(){
   if(cnt("done"))chips.push(`<span class="schip"><span class="n">${cnt("done")}</span> done</span>`);
   document.getElementById("strip").innerHTML=chips.join("")||"";
   const needsEl=document.getElementById("needs");
-  const useTable=rest.length>=4;
   if(gated.length){needsEl.innerHTML=`<h2>needs you <span class="count-pill">${gated.length}</span></h2><div class="grid">`+gated.map(r=>card(r,false)).join("")+`</div>`;needsEl.style.display="";}
   else needsEl.style.display="none";
   const activeEl=document.getElementById("active");
   if(OFFLINE&&!RUNS.length){
     activeEl.innerHTML=`<div class="offline"><b>dashboard offline</b>can't reach /api/runs — is the orchestrate server running on :4600?
       <br><button class="btn sm" data-demo>preview with sample data</button></div>`;
-  } else if(rest.length){
-    activeEl.innerHTML=useTable
-      ?`<h2>running <span class="count-pill">${rest.length}</span></h2><div class="tbl">
-        <div class="trow thead"><span>status</span><span>run</span><span>relay</span><span>activity</span><span style="text-align:right">step</span><span style="text-align:right">elapsed</span><span style="text-align:right">updated</span><span></span></div>`
-        +rest.map(trow).join("")+`</div>`
-      :(gated.length?`<h2>running <span class="count-pill">${rest.length}</span></h2>`:"")+
-        `<div class="grid">`+rest.map(r=>card(r,false)).join("")+`</div>`;
+  } else if(openRuns.length){
+    activeEl.innerHTML=runSection("active",active)+runSection("waiting / handoff",waiting);
   } else if(!RUNS.length){
     activeEl.innerHTML=`<div class="empty">
       <div class="erelay"><span class="node k-claude done"></span><span class="seg k-codex"></span><span class="node k-codex done"></span><span class="seg k-codex"></span><span class="node k-codex active" style="animation:none"></span><span class="seg"></span><span class="node"></span><span class="seg"></span><span class="node"></span></div>
       Nothing running. Start a run and it appears here live.
       <br><span class="cmd">/orchestrate <span class="c2">&lt;topic&gt;</span></span></div>`;
-  } else if(gated.length&&!rest.length){
+  } else if(gated.length&&!openRuns.length){
     activeEl.innerHTML="";
   } else {
     activeEl.innerHTML="";

@@ -1,0 +1,9 @@
+{
+  "name": "chief-of-staff",
+  "description": "Turn one chat into the session's chief of staff: decompose a broad goal into parallel workstreams, delegate to background subagents, re-command workers mid-flight, route implementation to the orchestrate loop, and synthesize one answer. Intra-session by design — not a persistent cross-session conductor.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Christoffer91"
+  },
+  "homepage": "https://github.com/Christoffer91/ai-coding-skills/tree/main/chief-of-staff"
+}

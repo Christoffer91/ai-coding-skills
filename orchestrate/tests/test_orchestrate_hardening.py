@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import concurrent.futures
 import importlib.machinery
 import importlib.util
 import fcntl
@@ -93,23 +94,88 @@ class EmitterTests(unittest.TestCase):
         self.status("done", "--id", "t", "--status", "85 skills reviewed; validation clean")
         self.assertEqual(self.data()["status"], "done")
         self.assertEqual(self.data()["steps"][6]["state"], "done")
+        self.assertFalse(any(step["state"] in ("active", "fail") for step in self.data()["steps"]))
+        self.assertTrue(any(step["state"] == "skipped" for step in self.data()["steps"]))
         # explicit failure still maps to failed
         self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
         self.status("done", "--id", "t", "--status", "FAILED")
         self.assertEqual(self.data()["status"], "failed")
         self.assertEqual(self.data()["steps"][6]["state"], "fail")
 
+    def test_invalid_step_and_pr_states_are_rejected_without_mutation(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        before = self.data()
+        invalid_step = self.status("step", "--id", "t", "--n", "2", "--state", "complete", check=False)
+        self.assertNotEqual(invalid_step.returncode, 0)
+        self.assertEqual(self.data(), before)
+        invalid_pr = self.status("pr", "--id", "t", "--number", "1", "--url", "https://example.invalid/1",
+                                 "--state", "DEPLOYED", check=False)
+        self.assertNotEqual(invalid_pr.returncode, 0)
+        self.assertEqual(self.data(), before)
+        self.status("pr", "--id", "t", "--number", "1", "--url", "https://example.invalid/1",
+                    "--state", "merged")
+        self.assertEqual(self.data()["pr"]["state"], "MERGED")
+        self.assertIsInstance(self.data()["pr"]["checkedAt"], int)
+
+    def test_concurrent_emits_preserve_independent_updates(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+
+        def emit(index: int):
+            return self.status("metric", "--id", "t", "--key", f"parallel.{index}", "--value", str(index))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(emit, range(24)))
+        self.assertTrue(all(result.returncode == 0 for result in results))
+        self.assertEqual(self.data()["metrics"], {f"parallel.{i}": str(i) for i in range(24)})
+
     def test_handoff_and_fail_are_explicit_states(self):
         self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
         self.status("handoff", "--id", "t")
         self.assertEqual(self.data()["status"], "handoff")
         self.assertIsNone(self.data()["pid"])
+        rejected = self.status("done", "--id", "t", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("explicitly resumed", rejected.stderr)
+        self.assertEqual(self.data()["status"], "handoff")
         self.status("fail", "--id", "t")
         self.assertEqual(self.data()["status"], "failed")
         self.assertIsNone(self.data()["gate"])
         self.assertEqual(self.data()["steps"][self.data()["step"] - 1]["state"], "fail")
         self.status("rm", "--id", "t")
         self.assertFalse((self.home / ".orchestrate/runs/t.json").exists())
+
+    def test_terminal_lifecycle_mutations_are_rejected_without_mutation(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        record = self.data()
+        record["status"] = "abandoned"
+        run_path = self.home / ".orchestrate/runs/t.json"
+        run_path.write_text(json.dumps(record))
+        before = self.data()
+        rejected = self.status("step", "--id", "t", "--n", "2", "--state", "active", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(self.data(), before)
+
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("done", "--id", "t")
+        before = self.data()
+        rejected = self.status("handoff", "--id", "t", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(self.data(), before)
+
+    def test_done_rejects_an_unresolved_failed_step(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("step", "--id", "t", "--n", "1", "--state", "fail")
+        rejected = self.status("done", "--id", "t", check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("while a step is failed", rejected.stderr)
+        self.assertEqual(self.data()["status"], "fail")
+
+    def test_fail_command_normalizes_step_failure_to_terminal_failed(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("step", "--id", "t", "--n", "1", "--state", "fail")
+        self.assertEqual(self.data()["status"], "fail")
+        self.status("fail", "--id", "t")
+        self.assertEqual(self.data()["status"], "failed")
 
     def test_handoff_requires_explicit_resume_and_clears_stale_restart_state(self):
         self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
@@ -230,6 +296,43 @@ class EmitterTests(unittest.TestCase):
         self.assertEqual(stdout.strip(), "Yes")
         self.assertIn("invalid gate choice", stderr)
 
+    def test_wait_does_not_hold_the_run_lock_while_waiting_for_a_human(self):
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("gate", "--id", "t", "--question", "Continue?", "--option", "Approve")
+        waiter = subprocess.Popen(
+            ["python3", str(STATUS), "wait", "--id", "t", "--timeout", "1", "--interval", "0.05"],
+            env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            time.sleep(0.1)
+            run("python3", str(STATUS), "metric", "--id", "t", "--key", "concurrent",
+                "--value", "ok", env=self.env, check=True, timeout=0.5)
+            self.assertEqual(self.data()["metrics"]["concurrent"], "ok")
+        finally:
+            waiter.communicate(timeout=2)
+
+    def test_gate_answer_consumption_keeps_a_newer_post_lock_answer(self):
+        status = load_script("orchestrate_status_gate_answer_test", STATUS)
+        status.RUNS = str(self.home / ".orchestrate/runs")
+        status.ANS = str(self.home / ".orchestrate/answers")
+        self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
+        self.status("gate", "--id", "t", "--question", "Ship?", "--option", "Yes", "--option", "No")
+        answer = self.home / ".orchestrate/answers/t.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(json.dumps({"choice": "Yes"}))
+
+        class LockThatWritesNewAnswer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                answer.write_text(json.dumps({"choice": "No"}))
+
+        with mock.patch.object(status, "acquire_run_lock", return_value=LockThatWritesNewAnswer()):
+            choice, error = status.consume_gate_answer("t", str(answer))
+        self.assertEqual((choice, error), ("Yes", None))
+        self.assertEqual(json.loads(answer.read_text()), {"choice": "No"})
+
     def test_notify_hook_fires_once_for_gate_fail_and_handoff(self):
         log = self.home / "notify.log"
         hook = self.home / "notify-hook"
@@ -238,14 +341,18 @@ class EmitterTests(unittest.TestCase):
         self.env.pop("ORCH_NOTIFY_DISABLE", None)
         self.status("start", "--id", "t", "--repo", "r", "--topic", "t", "--title", "T", "--branch", "b")
         self.status("gate", "--id", "t", "--question", "Ship?", "--option", "Yes", "--option", "No")
-        self.status("fail", "--id", "t")
+        answer = self.home / ".orchestrate/answers/t.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(json.dumps({"choice": "Yes"}))
+        self.status("wait", "--id", "t", "--timeout", "1", "--interval", "0.01")
         self.status("pr", "--id", "t", "--number", "42", "--url", "https://example.test/pr/42")
         self.status("handoff", "--id", "t", "--review-command", "/orchestrate review t")
+        self.status("fail", "--id", "t")
         messages = log.read_text().splitlines()
         self.assertEqual(len(messages), 3)
         self.assertIn("needs you: Ship?", messages[0])
-        self.assertIn("failed at step", messages[1])
-        self.assertEqual(messages[2], "PR #42 ready for review — run: /orchestrate review t")
+        self.assertEqual(messages[1], "PR #42 ready for review — run: /orchestrate review t")
+        self.assertIn("failed at step", messages[2])
 
     def test_toml_notify_argv_is_executed_without_a_shell(self):
         cwd = self.home / "repo"
@@ -691,7 +798,7 @@ class DashboardTests(unittest.TestCase):
         health = {run["id"]: run["health"] for run in self.dashboard.load_runs()}
         for status, expected in expected_inactive.items():
             self.assertEqual(health[f"{status}-lease"], expected)
-        self.assertEqual(health["all-done-lease"], "done")
+        self.assertEqual(health["all-done-lease"], "incomplete")
 
     def test_rejected_sidecar_leases_leave_old_runs_quiet(self):
         now = time.time()
@@ -760,15 +867,61 @@ class DashboardTests(unittest.TestCase):
         self.assertGreaterEqual(watchdog.thresholds.WATCHDOG_GRACE_SECS,
                                 self.dashboard.thresholds.DRIVER_STALE_SECS)
 
-    def test_all_steps_done_renders_done_not_stalled(self):
+    def test_all_steps_done_requires_explicit_terminal_emit(self):
         old = int(time.time()) - 9999
         steps = [{"n": i + 1, "state": "done"} for i in range(7)]
         self.write_run("finished", status="running", updatedAt=old, steps=steps)
         self.write_run("midstep", status="running", updatedAt=old, pid=999999,
                        steps=[{"n": 1, "state": "done"}, {"n": 2, "state": "active"}])
         health = {r["id"]: r["health"] for r in self.dashboard.load_runs()}
-        self.assertEqual(health["finished"], "done")
+        self.assertEqual(health["finished"], "incomplete")
         self.assertIn(health["midstep"], ("stale", "exited"))
+
+    def test_malformed_run_warns_once_per_file_version(self):
+        broken = self.runs / "broken.json"
+        broken.write_text("{")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.dashboard.load_runs()
+            self.dashboard.load_runs()
+        self.assertEqual(stderr.getvalue().count("skipping malformed run broken.json"), 1)
+        broken.write_text("{not-json")
+        os.utime(broken, (time.time() + 1, time.time() + 1))
+        with contextlib.redirect_stderr(stderr):
+            self.dashboard.load_runs()
+        self.assertEqual(stderr.getvalue().count("skipping malformed run broken.json"), 2)
+
+    def test_malformed_non_utf8_and_non_object_runs_are_skipped(self):
+        (self.runs / "bytes.json").write_bytes(b"\xff")
+        (self.runs / "array.json").write_text(json.dumps(["not", "a", "record"]))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(self.dashboard.load_runs(), [])
+            self.assertEqual(self.dashboard.load_runs(), [])
+        output = stderr.getvalue()
+        self.assertEqual(output.count("skipping malformed run bytes.json"), 1)
+        self.assertEqual(output.count("skipping malformed run array.json"), 1)
+
+    def test_broken_pipe_during_response_is_quiet(self):
+        handler = object.__new__(self.dashboard.Handler)
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        handler.wfile = mock.Mock()
+        handler.wfile.write.side_effect = BrokenPipeError
+        handler._send(200, "ok", "text/plain")
+
+    def test_pr_state_and_done_labels_are_independent_and_stale_is_explicit(self):
+        old = int(time.time()) - self.dashboard.PR_STATE_STALE_SECS - 1
+        self.write_run("done-open", status="done", pr={"number": "7", "url": "https://example.invalid/7",
+                       "state": "OPEN", "checkedAt": old})
+        run = next(item for item in self.dashboard.load_runs() if item["id"] == "done-open")
+        self.assertTrue(run["pr"]["stale"])
+        html = (DASHBOARD_DIR / "dashboard.html").read_text()
+        self.assertNotIn('r.status==="done"||/merged/i', html)
+        self.assertIn('done ✓', html)
+        self.assertIn('terminal emit missing', html)
+        self.assertIn('r.pr.stale?" · stale"', html)
 
     def test_tools_resolve_symlinked_install_to_real_files(self):
         # install.sh --link-bin and the skill bootstrap put symlinks in ~/.local/bin;
@@ -798,10 +951,12 @@ class DashboardTests(unittest.TestCase):
         self.write_run("failed-old", status="failed", updatedAt=old)
         self.write_run("active-old", status="running", updatedAt=old)
         (self.answers / "done-old.json").write_text("{}")
+        (self.runs / "done-old.json.lock").write_text("")
         self.dashboard.cleanup_retained_runs(now=int(time.time()))
         self.assertFalse((self.runs / "done-old.json").exists())
         self.assertFalse((self.runs / "failed-old.json").exists())
         self.assertFalse((self.answers / "done-old.json").exists())
+        self.assertFalse((self.runs / "done-old.json.lock").exists())
         self.assertTrue((self.runs / "active-old.json").exists())
 
     def test_reap_uses_group_only_for_identity_matched_group_leader(self):
@@ -902,6 +1057,13 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('cnt("failed")}</span> failed', html)
         self.assertGreaterEqual(html.count('quiet:"var(--border-strong)"'), 2)
 
+    def test_dashboard_separates_active_runs_from_waiting_and_handoffs(self):
+        html = (DASHBOARD_DIR / "dashboard.html").read_text()
+        self.assertIn('const waitingStates=new Set(["handoff","paused","quiet"])', html)
+        self.assertIn('runSection("active",active)', html)
+        self.assertIn('runSection("waiting / handoff",waiting)', html)
+        self.assertNotIn('<h2>running <span class="count-pill">', html)
+
     def test_overrides_api_uses_real_http_validation_and_serialization(self):
         class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
             allow_reuse_address = True
@@ -943,6 +1105,20 @@ class WatchdogTests(unittest.TestCase):
     def setUpClass(cls):
         cls.watchdog = load_script("orchestrate_watchdog_test", WATCHDOG)
 
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.watchdog_log = Path(self.tmp.name) / "watchdog.log"
+        self.env_patch = mock.patch.dict(os.environ, {"ORCH_WATCHDOG_LOG": str(self.watchdog_log)})
+        self.env_patch.start()
+
+    def tearDown(self):
+        self.env_patch.stop()
+        self.tmp.cleanup()
+
+    def test_log_output_is_isolated_by_environment(self):
+        self.watchdog.logline("isolated test")
+        self.assertIn("isolated test", self.watchdog_log.read_text())
+
     def test_only_exact_recorded_worker_can_be_reaped(self):
         run_data = {"worker": {"pid": 321, "startedAt": "token", "cwd": "/tmp/w", "pgid": 321}}
         with mock.patch.object(self.watchdog, "process_matches", return_value=False), \
@@ -969,14 +1145,14 @@ class WatchdogTests(unittest.TestCase):
             self.assertEqual(json.loads((runs / "old.json").read_text())["status"], "abandoned")
             self.assertEqual(json.loads((runs / "fresh.json").read_text())["status"], "running")
 
-    def test_sweep_ignores_silent_no_worker_runs_but_flags_worker_backed(self):
+    def test_sweep_retires_abandoned_no_worker_without_flagging_it_as_stalled(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             runs = home / ".orchestrate" / "runs"
             runs.mkdir(parents=True)
             (home / ".orchestrate" / "answers").mkdir()
             old = int(time.time()) - 100000  # far past any grace
-            # No pid, no recorded worker: a Codex goal / in-session run. Nothing to reap → leave alone.
+            # No pid, no recorded worker: retire after the abandon budget, never flag as stalled.
             (runs / "goal.json").write_text(json.dumps(
                 {"id": "goal", "status": "running", "updatedAt": old, "pid": None}))
             # Worker-backed run whose pid is dead: genuinely needs flagging.
@@ -987,8 +1163,27 @@ class WatchdogTests(unittest.TestCase):
                  mock.patch.object(self.watchdog, "ANS", str(home / ".orchestrate" / "answers")), \
                  mock.patch.object(self.watchdog, "reap_recorded_worker", return_value=[]):
                 self.watchdog.sweep(grace=180, handled={})
-            self.assertNotIn("needsRestart", json.loads((runs / "goal.json").read_text()))
+            goal = json.loads((runs / "goal.json").read_text())
+            self.assertEqual(goal["status"], "abandoned")
+            self.assertNotIn("needsRestart", goal)
             self.assertTrue(json.loads((runs / "worker.json").read_text())["needsRestart"])
+
+    def test_sweep_skips_non_utf8_and_non_object_records(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            runs = home / ".orchestrate" / "runs"
+            runs.mkdir(parents=True)
+            answers = home / ".orchestrate" / "answers"
+            answers.mkdir()
+            bytes_path = runs / "bytes.json"
+            array_path = runs / "array.json"
+            bytes_path.write_bytes(b"\xff")
+            array_path.write_text(json.dumps(["not", "a", "record"]))
+            with mock.patch.object(self.watchdog, "RUNS", str(runs)), \
+                 mock.patch.object(self.watchdog, "ANS", str(answers)):
+                self.watchdog.sweep(grace=180, handled={})
+            self.assertEqual(bytes_path.read_bytes(), b"\xff")
+            self.assertEqual(json.loads(array_path.read_text()), ["not", "a", "record"])
 
 
 class VerifyHelperTests(unittest.TestCase):
@@ -2001,6 +2196,57 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn("Before returning control to the user", status)
         for terminal in ("`pause`", "`handoff`", "`done`", "`fail`", "`cancel`"):
             self.assertIn(terminal, status)
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_goal_scoped_action_grants_complete_pr_work_without_redundant_gates(self):
+        skill = (CODEX_ORCHESTRATE / "SKILL.md").read_text()
+        status = (CODEX_ORCHESTRATE / "references" / "shared-run-status.md").read_text()
+        final_review = (CODEX_ORCHESTRATE / "references" / "claude-final-review.md").read_text()
+        scenarios = json.loads(
+            (CODEX_ORCHESTRATE / "references" / "scenario-evals.json").read_text()
+        )
+        by_id = {scenario["id"]: scenario for scenario in scenarios}
+
+        self.assertIn("Goal-scoped action authorization", skill)
+        self.assertIn("Never ask again", skill)
+        self.assertIn("Do not make the user an obligatory reviewer", skill)
+        self.assertIn("immediately resume the same run", skill)
+        self.assertIn("matching goal-scoped grant", skill)
+        self.assertIn("If merge triggers publishing or production deployment", skill)
+        self.assertIn("incidental mentions, questions, examples, and negated instructions do not", skill)
+        self.assertIn("grants only that named action", skill)
+        self.assertIn("A valid `PR_READY` action grant authorizes immediate review resume", status)
+        self.assertIn("without another approval prompt", final_review)
+
+        local = by_id["local-explicit-no-git-write"]
+        self.assertFalse(local["git_write_executed"])
+        self.assertTrue(local["negated_merge_mention"])
+        self.assertFalse(local["merge_grant_inferred"])
+        self.assertTrue(local["action_grants"]["external_final_review"])
+        for action in ("commit", "push", "pr_write", "merge", "deploy"):
+            self.assertFalse(local["action_grants"][action])
+
+        pr_ready = by_id["pr-ready-happy-path"]
+        for action in ("commit", "push", "pr_write", "external_final_review"):
+            self.assertTrue(pr_ready["action_grants"][action])
+        self.assertFalse(pr_ready["action_grants"]["merge"])
+        self.assertFalse(pr_ready["action_grants"]["deploy"])
+        self.assertEqual(pr_ready["redundant_approval_prompts"], 0)
+        self.assertFalse(pr_ready["user_is_mandatory_reviewer"])
+
+        merge = by_id["pr-ready-merge-authorized"]
+        self.assertTrue(merge["exact_active_goal_merge_grant"])
+        self.assertTrue(merge["merge_executed"])
+        self.assertEqual(merge["redundant_approval_prompts"], 0)
+
+        deploy_gate = by_id["merge-is-deploy-gate"]
+        self.assertTrue(deploy_gate["merge_is_deploy"])
+        self.assertFalse(deploy_gate["deploy_grant"])
+        self.assertFalse(deploy_gate["merge_executed"])
+
+        invalidated = by_id["authorization-invalidated-on-scope-change"]
+        self.assertTrue(invalidated["affected_grants_invalidated"])
+        self.assertFalse(invalidated["additional_push_executed"])
 
     @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
     def test_codex_resume_human_gate_and_fresh_task_contracts_are_explicit(self):

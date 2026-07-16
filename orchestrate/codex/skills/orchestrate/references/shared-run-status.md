@@ -149,7 +149,8 @@ orch_emit step --id "$RUN_ID" --n 3 --log "$STEP_LOG" --tokens "$STEP_TOKENS"
 ```
 
 An inactive run never resumes through an incidental `step`. After a new user message explicitly
-resumes a `paused` run or accepts a `handoff`, emit the lifecycle transition first:
+resumes a `paused` run, or after the active goal's recorded `PR_READY` grant authorizes the conductor
+to continue a review `handoff`, emit the lifecycle transition first:
 
 ```bash
 orchestrate-status resume --id "$RUN_ID" --reason "explicit user resume"
@@ -159,7 +160,12 @@ This preserves PR/review metadata, rotates the liveness generation, and clears s
 `needsRestart`/watchdog evidence. `await`, `done`, `failed`, and `rejected` cannot be resumed this
 way. Answer an `await` gate through its recorded option; create a fresh run after a terminal result.
 
-For recoverable `needs-rework`, `ESCALATE/BLOCKED`, or no-progress stops, keep the run non-terminal: emit the current step as `pending` with a short reason and then `pause`. Reserve `fail --id "$RUN_ID"` for an actual terminal failure. On successful local completion use `done --id "$RUN_ID"`. A `PR_READY` review handoff instead ends with `handoff` and stays in that state; do NOT emit `done` after it — the reviewer resumes this exact run (`status=handoff` is required) and closes it with `done` after review.
+For recoverable `needs-rework`, `ESCALATE/BLOCKED`, or no-progress stops, keep the run non-terminal:
+emit the current step as `pending` with a short reason and then `pause`. Reserve `fail --id "$RUN_ID"`
+for an actual terminal failure. On successful local completion use
+`done --id "$RUN_ID"`; a `PR_READY` review handoff stays in `handoff` on this same run until an
+authorized conductor or an explicit `/orchestrate review` resumes it. Only that resumed review leg
+emits terminal `done|fail`.
 
 ## Timeouts and lifecycle closure
 
@@ -183,6 +189,13 @@ six hours with no fresh sidecar lease is auto-retired to the terminal `abandoned
 cleanup is not a substitute for an explicit `done`/`fail` emit.
 Emitter failure remains non-fatal to the underlying task, but record `shared status: EMIT_FAILED` in
 the local report.
+
+`handoff` is a durable review boundary, not completion. Do not follow it with `done`, create a second
+run for the same PR review, or mutate its JSON directly. Validate the baton and PR metadata, then
+emit `resume` and continue steps 5–7 on the same run ID. A valid `PR_READY` action grant authorizes immediate review resume;
+otherwise wait for explicit user input. The review leg emits one clean
+terminal `done` or `fail`. A pid-less run left non-terminal for more than six hours without a fresh
+lease becomes `abandoned`; that retirement is a fallback, not a lifecycle strategy.
 
 ## Best-effort token metrics
 
@@ -242,10 +255,12 @@ orch_emit metric --id "$RUN_ID" --key session --value "$IMPLEMENTATION_SESSION_I
 orch_emit handoff --id "$RUN_ID" \
   --baton "$PWD/HANDOFF-CLAUDE-review-$TOPIC.md" \
   --review-command "/orchestrate review $TOPIC"
-# STOP here — do NOT emit `done`. `handoff` is the open state the reviewer resumes.
+# Do not emit `done` here. Resume the same run immediately when PR_READY remains valid;
+# otherwise stop in `handoff` for an explicit review resume.
 ```
 
 The metric key is exactly `session`; the handoff emit validates the PR metadata and readable absolute
-baton path. The run then STAYS in `handoff` (the dashboard shows "with Claude · review"); the reviewer
-resumes this same run via `/orchestrate review` and closes it with `done` after review — the conductor
-must not close it.
+baton path. The run enters `handoff` (the dashboard shows "with Claude · review"). With a valid
+`PR_READY` grant, the conductor emits `resume` and starts the authorized reviewer immediately. Without
+that grant, the run stays in `handoff` until `/orchestrate review` resumes it. In both cases the resumed
+review leg closes this same run with `done` or `fail`; never close it before review.

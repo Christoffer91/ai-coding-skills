@@ -119,13 +119,13 @@
     "review_sequence": [
       {
         "stage": "plan-critique",
-        "authorization": "standing-unused-allowance",
-        "allowance_after_dispatch": "consumed"
+        "reviewer": "internal-orchestrate-plan-critic",
+        "allowance_after_stage": "unused"
       },
       {
         "stage": "final-review",
-        "standing_dispatch_refused": true,
-        "required_authorization": "separate-explicit-outbound-approval-or-new-explicit-orchestrate-invocation"
+        "authorization": "standing-unused-allowance",
+        "allowance_after_dispatch": "consumed"
       }
     ],
     "extra_comparative_paid_calls_authorized": false,
@@ -140,7 +140,7 @@
       "tenant-or-live-calls",
       "all-other-hard-gates"
     ],
-    "terminal": "AWAIT_FINAL_REVIEW_OUTBOUND_AUTHORIZATION"
+    "terminal": "FINAL_REVIEW_DISPATCHED"
   },
   {
     "id": "explicit-orchestrate-preflight-failure",
@@ -220,12 +220,89 @@
     "terminal": "RESUMED"
   },
   {
-    "id": "pr-ready-stop-gate",
+    "id": "local-explicit-no-git-write",
+    "mode": "LOCAL",
+    "profile": "STANDARD",
+    "explicit_skill_invocation": true,
+    "negated_merge_mention": true,
+    "action_grants": {
+      "commit": false,
+      "push": false,
+      "pr_write": false,
+      "external_final_review": true,
+      "merge": false,
+      "deploy": false
+    },
+    "git_write_executed": false,
+    "merge_grant_inferred": false,
+    "terminal": "VERIFIED_LOCAL"
+  },
+  {
+    "id": "pr-ready-happy-path",
     "mode": "PR_READY",
     "profile": "STANDARD",
-    "external_action_requires_explicit_authorization": true,
-    "standing_external_review_authorization_covers_pr": false,
+    "explicit_skill_invocation": true,
+    "action_grants": {
+      "commit": true,
+      "push": true,
+      "pr_write": true,
+      "external_final_review": true,
+      "merge": false,
+      "deploy": false
+    },
+    "flow": [
+      "implement",
+      "verify",
+      "commit",
+      "push",
+      "pr-write",
+      "claude-final-review",
+      "validate-findings",
+      "fix-blockers",
+      "reverify",
+      "push-fixes"
+    ],
+    "redundant_approval_prompts": 0,
+    "user_is_mandatory_reviewer": false,
+    "external_failure_fallback": "internal-reviewer",
+    "review_fix_round_limit": 3,
     "writes": true,
-    "terminal": "PR_READY_LOCAL"
+    "terminal": "PR_OPEN_REVIEWED"
+  },
+  {
+    "id": "pr-ready-merge-authorized",
+    "mode": "PR_READY",
+    "profile": "STANDARD",
+    "exact_active_goal_merge_grant": true,
+    "required_checks_green": true,
+    "final_review_validated": true,
+    "blocking_findings": 0,
+    "mergeable": true,
+    "merge_is_deploy": false,
+    "merge_executed": true,
+    "redundant_approval_prompts": 0,
+    "terminal": "MERGED"
+  },
+  {
+    "id": "merge-is-deploy-gate",
+    "mode": "PR_READY",
+    "profile": "STANDARD",
+    "exact_active_goal_merge_grant": true,
+    "merge_is_deploy": true,
+    "deploy_grant": false,
+    "merge_executed": false,
+    "terminal": "AWAIT_DEPLOY_AUTHORIZATION"
+  },
+  {
+    "id": "authorization-invalidated-on-scope-change",
+    "mode": "PR_READY",
+    "profile": "STANDARD",
+    "initial_pr_write_grant": true,
+    "material_scope_change": true,
+    "affected_grants_invalidated": true,
+    "additional_push_executed": false,
+    "merge_executed": false,
+    "writes": true,
+    "terminal": "REPLAN_OR_DECISION"
   }
 ]

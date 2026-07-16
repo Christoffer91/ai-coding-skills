@@ -28,6 +28,8 @@ HTML = os.path.join(HERE, "dashboard.html")
 STALE_SECS = thresholds.DRIVER_STALE_SECS          # streaming driver silent this long => "stalled"
 SESSION_STALE_SECS = thresholds.SESSION_QUIET_SECS  # model run silent this long => neutral "quiet"
 RETENTION_SECS = 7 * 24 * 60 * 60
+PR_STATE_STALE_SECS = 15 * 60
+MALFORMED_WARNINGS = {}
 
 
 def pid_alive(pid):
@@ -52,8 +54,26 @@ def load_runs():
         try:
             with open(f) as fh:
                 r = json.load(fh)
-        except Exception:
+            if not isinstance(r, dict):
+                raise ValueError("run record must be an object")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            try:
+                version = os.path.getmtime(f)
+            except OSError:
+                version = None
+            if MALFORMED_WARNINGS.get(f) != version:
+                print(f"orchestrate-dashboard: skipping malformed run {os.path.basename(f)}: "
+                      f"{type(exc).__name__}", file=sys.stderr)
+                MALFORMED_WARNINGS[f] = version
             continue
+        MALFORMED_WARNINGS.pop(f, None)
+        pr = r.get("pr")
+        if isinstance(pr, dict):
+            try:
+                checked_at = float(pr.get("checkedAt"))
+            except (TypeError, ValueError):
+                checked_at = None
+            pr["stale"] = checked_at is None or now - checked_at > PR_STATE_STALE_SECS
         af = os.path.join(ANS, os.path.basename(f))
         if os.path.exists(af):
             try:
@@ -92,8 +112,8 @@ def load_runs():
             r["health"] = "abandoned"     # auto-retired by the watchdog: silent for hours, no lease
         elif status == "done":
             r["health"] = "done"
-        elif r.get("steps") and all(s.get("state") == "done" for s in r["steps"]):
-            r["health"] = "done"          # every step done: finished round missing its terminal emit
+        elif r.get("steps") and all(s.get("state") in ("done", "skipped") for s in r["steps"]):
+            r["health"] = "incomplete"    # explicit terminal emit is still required
         elif r.get("gate") and not r.get("answered"):
             r["health"] = "waiting"       # blocked on you, not a liveness concern
         elif alive is False:
@@ -263,6 +283,8 @@ def cleanup_retained_runs(now=None):
             continue
         try: os.remove(filename)
         except OSError: pass
+        try: os.remove(filename + ".lock")
+        except OSError: pass
         liveness.remove_run_leases(LIVENESS, str(run.get("id") or ""))
         answer = os.path.join(ANS, os.path.basename(filename))
         try: os.remove(answer)
@@ -325,12 +347,15 @@ def resolve_console_log(rid, step=None):
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         b = body if isinstance(body, bytes) else str(body).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(b)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(b)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
