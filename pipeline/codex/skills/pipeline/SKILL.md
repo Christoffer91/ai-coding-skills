@@ -11,7 +11,8 @@ allowed-tools: "codebase readFile search usages changes problems fetch todos edi
 - In `EXECUTE`, proceed with requested safe edits and non-mutating validators. State commands before running them when practical.
 - STOPP: Ask before deploy/publish/apply, installs, destructive commands, credential changes, expensive/long-running jobs, or any command outside the user's apparent intent.
 - STOPP: If a command allowlist was explicitly agreed, ask again before adding commands outside that allowlist.
-- STOPP: Ask before running external/paid model review tools such as Claude Code CLI or `claude ultrareview`; print the exact command first.
+- STOPP: Ask before external/paid model review unless explicit `$orchestrate` standing authorization
+  covers the bounded secret-free lane. Never treat `claude ultrareview` as covered by that grant.
 
 ## Purpose
 One entrypoint skill to enforce the “Standard Pipeline” across chats: adaptive model routing, spec-driven plans when justified, fresh plan critique, continuity, safety gates, verification, documentation, and PR-ready output.
@@ -41,7 +42,9 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
 - Orchestrate recursion guard: `CALLER=orchestrate` with `CONTRACT_ONLY=true` when the planner invokes this pipeline only to produce a contract.
 - If `EXECUTE`: optional command allowlist or explicit stop gates.
 - If execution should be bounded across iterations: route the approved plan to `loop-controller` with a continuity track, working set, and command allowlist.
-- Optional Claude review gate: `CLAUDE_REVIEW=off|requested|required` remains a compatibility alias. `requested|required` selects `PLAN_CRITIQUE=CLAUDE`, but the external call still requires approval of the exact command.
+- Claude review policy: `CLAUDE_REVIEW=auto|required|off` (default `auto`); legacy `requested` maps to
+  `auto`. This controls final-review eligibility, not automatic plan critique. Explicit `$orchestrate`
+  may satisfy outbound approval under its goal-scoped budget; implicit routing still requires it.
 
 ## Outputs
 - Format: `Pipeline Plan` (PLAN_ONLY) or `Pipeline Execution Report` (EXECUTE).
@@ -95,12 +98,18 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
 1. Resolve `EXECUTION_PROFILE=AUTO|DIRECT|FAST|STANDARD|DEEP`; default to `AUTO` and report the selected profile plus concrete reason.
 2. `DIRECT`: no model-routed subagents. Use only for Q&A, critique-only work, or a tiny non-mutating response where delegation costs more than the task.
 3. `FAST`: one bounded mechanical or local change with a known solution, reversible scope, no unresolved design choice, and one deterministic focused check. Produce a `MICRO_SPEC`, then route the approved edit to `orchestrate_executor` (Terra medium) without Sol Ultra planner or reviewer.
-4. `STANDARD`: behavior or design changes with clear boundaries but meaningful acceptance, interface, test, or multi-file decisions. Route through `orchestrate` with a Sol Ultra `FULL_SPEC`, fresh internal plan critique, Terra execution, fresh final review, and optional/non-fatal shared status emission per `orchestrate/references/shared-run-status.md`.
+4. `STANDARD`: behavior or design changes with clear boundaries but meaningful acceptance, interface,
+   test, or multi-file decisions. Route through `orchestrate` with a Sol Ultra `FULL_SPEC`, fresh
+   internal plan critique, Terra execution, and one fresh Sol final review. Do not add autoreview or
+   Claude by default.
 5. `DEEP`: security/auth/privacy, destructive or irreversible work, migrations, dependencies with broad impact, public API/schema changes, architecture boundaries, production incidents, ambiguous failures, cross-repo work, or risk `REVIEW/ESCALATE/BLOCKED`. Use the full orchestrated route with deep evidence, human gates, and optional/non-fatal shared status emission per `orchestrate/references/shared-run-status.md`.
 6. Risk and uncertainty override apparent size. A one-file auth change is `DEEP`; a deterministic mechanical multi-file rewrite may remain `FAST` when invariants and verification are explicit.
 7. Escalation is one-way: `FAST -> STANDARD -> DEEP`. Do not reset or downgrade the profile by rephrasing the task. Replan when scope, risk, acceptance criteria, dependencies, or evidence materially change.
-8. A skill cannot change the active parent model. Adaptive savings come from bounded delegation to model-pinned agents; the current task still performs the small routing decision.
-9. When `CALLER=orchestrate` and `CONTRACT_ONLY=true`, produce the requested plan contract and return it to the conductor. Do not route recursively back to `orchestrate`, spawn an executor, or create a second state record.
+8. Apply the profile's observe-only measured-token threshold from
+   [`orchestrate/references/token-budgeting.md`](../orchestrate/references/token-budgeting.md). Treat
+   it as a next-spawn signal, not a billing estimate or permission to skip required verification.
+9. A skill cannot change the active parent model. Adaptive savings come from bounded delegation to model-pinned agents; the current task still performs the small routing decision.
+10. When `CALLER=orchestrate` and `CONTRACT_ONLY=true`, produce the requested plan contract and return it to the conductor. Do not route recursively back to `orchestrate`, spawn an executor, or create a second state record.
 
 ### 0c) SPEC AND CRITIQUE POLICY
 1. Resolve `SPEC_MODE=AUTO|MICRO_SPEC|FULL_SPEC`.
@@ -110,9 +119,19 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
 2. Do not force `FULL_SPEC` onto trivial or purely mechanical work. Spec depth follows decision complexity, not ceremony.
 3. Every `FULL_SPEC` must have a completed critique before implementation. A new or materially revised `FULL_SPEC` requires a fresh critique; an unchanged approved contract may reuse its recorded completed `Critique disposition` when resuming.
    - `PLAN_CRITIQUE=AUTO|INTERNAL` -> `orchestrate_plan_critic` follows `critique` without planner rationale.
-   - `PLAN_CRITIQUE=CLAUDE` -> use the approval-gated Fable-to-Opus procedure in `orchestrate/references/claude-plan-critique.md`.
+   - `PLAN_CRITIQUE=CLAUDE` -> explicit exceptional lane only; use the bounded procedure in `orchestrate/references/claude-plan-critique.md`.
    - `PLAN_CRITIQUE=OFF` -> plan-only inspection. For `EXECUTE` with a `FULL_SPEC`, stop at `AWAIT_APPROVAL`; no executor may run until an internal or approved Claude critique completes. An explicit override cannot bypass this implementation gate.
 4. Record accepted and rejected concerns under `Critique disposition`. Material changes to scope, invariants, acceptance criteria, commands, or risk return to approval.
+
+### 0d) ONE REVIEW DECISION
+1. Select one final-review tier from `orchestrate/references/review-policy.md` during triage.
+2. Docs/format/mechanical work uses deterministic checks. FAST uses one local `autoreview`. STANDARD
+   uses one fresh Sol reviewer. IMPORTANT uses one Sol or Claude Sonnet reviewer. SECURITY uses the
+   Codex Security diff scan plus optional authorized Claude Opus. Fable is explicit EXCEPTIONAL only.
+3. A selected external lane replaces the ordinary internal final reviewer for that pass. Do not stack
+   autoreview, Sol, and Claude to obtain redundant agreement.
+4. Use the PR/head/policy idempotency key and the goal budget. Never review every push. Re-review
+   externally only once after an accepted blocking security finding changed the risky surface.
 
 ### A) TRIAGE (classify the work early)
 1. Classify the request into one or more tracks (use the most specific that fits):
@@ -136,10 +155,12 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
 3. Resolve and record `EXECUTION_PROFILE`, `SPEC_MODE`, `PLAN_CRITIQUE`, routing evidence, and any override before selecting domain skills.
 4. Decide routing (explicit skill order) and note it in the output:
    - If `CHANGE_TYPE=code/config` or `release/deploy`: run `risk-assess` before implementation; it includes the security touchpoint scan.
-   - If the task is security-sensitive, run `security-review` before `risk-assess` or as part of the risk evidence.
+   - If the task is security-sensitive, run `security-review` before `risk-assess`. Use installed Codex
+     Security plugin lanes for threat modeling, finding validation, and high-risk diff scans.
    - If UI is in scope: run `frontend-design` before `ux-review`.
    - If the task is `STANDARD` or `DEEP`, route the plan contract through `orchestrate`; use `workflow-orchestrator` only when an additional multi-domain review map is materially useful.
-   - If `CLAUDE_REVIEW=requested|required`, or risk is `REVIEW` or higher and the user approves a second opinion, run `claude-code-review` before implementation.
+   - If `PLAN_CRITIQUE=CLAUDE`, run the explicit external plan-critique lane before implementation.
+     Final Claude review is selected independently after implementation by the review tier.
 5. Recommended routing patterns (adapt as needed, keep the order):
    - Frontend: `frontend-design` -> `ux-review` -> `test-coverage` -> `verification-before-completion` -> `prepare-pr`
    - Backend: `architecture-review` (if design choices) -> `risk-assess` -> `test-coverage` -> `verification-before-completion` -> `prepare-pr`
@@ -207,13 +228,13 @@ This pipeline is the canonical entrypoint for non-trivial Codex work. External w
      (`<repo>-<topic>-<branch>-<UTC>-<pid>` — never reuse a prior goal's id), then `step`/`pr`/`gate`
      at real transitions. Every `step` emit MUST carry `--log "$STEP_LOG"` (a durable path under
      `$HOME/.orchestrate/artifacts/$RUN_ID/`, never `$TMPDIR`) and — for every codex phase —
-     `--tokens`: every `codex exec` prints a trailing `tokens used` line (integer on the next line),
-     so extract it, do not skip it:
-     `TOK=$(awk 'prev ~ /tokens used/ {s=$0; gsub(/[,[:space:]]/,"",s); if (s ~ /^[0-9]+$/) last=s} {prev=$0} END{print last}' "$STEP_LOG")`.
+     `--tokens`: after a completed Codex process, attempt structured JSONL
+     `turn.completed.usage` extraction only. Missing, malformed, duplicate, killed, or non-completing
+     telemetry remains uncovered and non-fatal; never parse a model response or a token footer.
      The dashboard stores both on that specific step for the step 1–7 viewer and per-step token
      display. Use `--state active|done` at real transitions; `--state` is optional, so a later
      metadata-only `step --n N --log ... --tokens ...` records metadata without changing state.
-     Do not estimate tokens — extract the printed count. A finished round that stays local must
+     Do not estimate tokens — emit only the validated structured count. Killed or hung attempts contribute no tokens but remain uncovered in the started-call denominator. A finished round that stays local must
      ALWAYS end with the clean terminal command `done --id "$RUN_ID"`, or `fail --id "$RUN_ID"`.
      Never put prose in `done --status`; its normalization is defensive, not an output channel.
      **PR-to-handoff is atomic:** after a `pr` emit, the NEXT status emission before returning
@@ -288,12 +309,12 @@ Quick reference (when to use which skill):
 | `critique` | A full spec needs independent challenge, or the user wants critical sparring before deciding | Required before approval for every `FULL_SPEC`; read-only |
 | `workflow-orchestrator` | Broad/high-risk multi-domain work; internal review router, not a second pipeline | Early (PLAN_ONLY), before implementation |
 | `loop-controller` | Approved bounded execution loop with state, budgets, command allowlist, verification, pause/resume, and stop gates | After plan/risk approval, before implementation iterations |
-| `claude-code-review` | Explicitly approved Claude Code second opinion using Fable with Opus fallback | Optional replacement for the internal full-spec critique gate |
+| `claude-code-review` | Explicit external second opinion when `orchestrate` is unavailable | Compatibility fallback; prefer the shared runner and selected review tier |
 | `karpathy-guidelines` | Non-trivial work needs assumptions, simplest viable approach, surgical diff boundary, and done criteria | Inside DESIGN/SPEC/PLAN and before final verification |
 | `understand-large-codebases` | You are new to an area, need request/data-flow tracing, or must explain/map a feature before editing | Early, before implementation and before broader review gates |
 | `architecture-review` | You must decide boundaries/data flows/ops impact before coding | Before `risk-assess` and implementation |
-| `security-review` | Security-sensitive or broad security work that may need audit/red/blue/risk lanes | Before `risk-assess` |
-| `security-audit` | Narrow secrets/auth/CORS/validation scan | Before implementation when relevant |
+| `security-review` | Security-sensitive work needs the lightest valid local or Codex Security plugin lane | Before `risk-assess` |
+| `codex-security:security-diff-scan` | High-risk auth, tenant, PII, secret, migration, data-loss, or supply-chain diff | Security final-review tier only |
 | `risk-assess` | Any non-trivial change; required before implementation/deploy | Before implementation |
 | `frontend-design` | Any UI/HTML/CSS/JS work needs a design spec + plan | Before `ux-review` |
 | `ux-review` | UI/user flows changed; need WCAG/a11y + interaction review | After `frontend-design`, before finishing |
@@ -319,7 +340,7 @@ Quick reference (when to use which skill):
 | `macos-workstation-diagnostics` | Battery, performance, process, disk, browser, or Codex slowdown diagnostics | Before cleanup or process mutation |
 | `cowork-package-review` | Cowork package validation/rebuild, metadata, ZIP, dashboard rendering | Before package publish/upload |
 | `test-coverage` | You need a concrete test plan / what to verify | Before `verification-before-completion` |
-| `autoreview` | You want a local diff/branch review loop that validates findings and fixes in-scope issues before final checks | After implementation, before `verification-before-completion` |
+| `autoreview` | FAST or explicitly requested local diff review with no separate final reviewer scheduled | After implementation; never duplicate Sol/Claude final review |
 | `verification-before-completion` | Before you say "done" / before merge | Near the end |
 | `update-dependencies` | You need a safe dependency bump plan (no execution by default) | Early, before verification |
 | `update-documentation` | README/docs/changelog must match behavior/config | After implementation, before PR |
@@ -375,6 +396,7 @@ Produce a final report that includes:
 - The output includes a BRIEF section before TRIAGE.
 - TRIAGE + DESIGN/SPEC + KARPATHY SANITY GATE + PLAN sections exist in the output.
 - TRIAGE records `EXECUTION_PROFILE`, `SPEC_MODE`, `PLAN_CRITIQUE`, and the evidence for each choice.
+- TRIAGE records one final-review tier and confirms that no redundant review lane is scheduled.
 - Every `FULL_SPEC` was produced by the Sol Ultra planner and has a completed `Critique disposition` before implementation.
 - Assumptions, simpler alternative considered, surgical scope / working set boundary, done criteria, and verification are explicit.
 - A Coverage Matrix is produced and each REQUIRED domain has a referenced skill run (or a justified skip).
@@ -391,7 +413,7 @@ Produce a final report that includes:
 - `.codex/CONTINUITY.template.md`
 - `.codex/continuity/README.md`
 - `.codex/continuity/TRACK.template.md`
-- `~/dev/repos/dotfiles/skills/codex/skills/`
+- `~/.codex/skills/`
 - `~/.codex/skills/`
 
 ## Next recommended skill(s)
@@ -404,4 +426,4 @@ Produce a final report that includes:
 ## Example prompts
 - "$pipeline PLAN_ONLY EXECUTION_PROFILE=AUTO: Produce the right-sized spec, routing evidence, critique gate, and verification plan."
 - "$pipeline EXECUTE EXECUTION_PROFILE=AUTO: Route this through the cheapest safe profile and complete local verification."
-- "$pipeline EXECUTE EXECUTION_PROFILE=DEEP PLAN_CRITIQUE=CLAUDE: Produce a Sol Ultra full spec, then request approval for the Fable-to-Opus critique gate."
+- "$pipeline EXECUTE EXECUTION_PROFILE=DEEP PLAN_CRITIQUE=CLAUDE: Produce a Sol Ultra full spec, then use the explicitly authorized exceptional Claude critique lane."

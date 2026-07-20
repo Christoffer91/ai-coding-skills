@@ -1,11 +1,11 @@
 # Orchestrate — dual-brain plan → execute → review → ship loop
 
-A Claude Code skill that takes a change from idea to an optionally deployed PR across two models:
+A portable workflow that takes a change from idea to a reviewed PR across two model providers:
 
-- **Claude** plans the change and reviews the PR — the taste/judgment half.
-- **OpenAI Codex CLI (`gpt-5.6-sol`)** critiques the plan, writes the code, opens the PR, and applies review edits — the execution half.
+- **OpenAI Codex CLI** uses Sol for planning, critique, evidence, and review, and Terra for bounded implementation.
+- **Claude** is an optional external lane for selected important, security-critical, or exceptional reviews.
 
-Keep expensive judgment work on Claude; hand mechanical, well-specified execution to Codex. Default is hands-off; real approval moments and deploy are gated.
+Use exactly one proportional final-review lane by default. Routine work stays deterministic or local; expensive external review is reserved for risk that justifies it. Real approval moments and deploy remain gated.
 
 ## Requirements
 
@@ -51,7 +51,7 @@ skill:
 ./install.sh --link-bin
 ```
 
-The installer backs up an existing skill, installs the Claude skill plus dashboard, installs the Codex-side skill into `~/.codex/skills` when a `~/.codex` directory exists (override with `CODEX_SKILLS_DIR`), checks required CLIs, and prints the dashboard/watchdog commands. The optional contract snippets remain available for global model-role defaults:
+The installer backs up existing skills, installs the Claude skill plus dashboard, installs the Codex-side skill into `~/.codex/skills` and its six model-role profiles into `~/.codex/agents` (override with `CODEX_SKILLS_DIR` and `CODEX_AGENTS_DIR`), checks required CLIs, and prints the dashboard/watchdog commands. The optional contract snippets remain available for global model-role defaults:
 
 - `contract/CLAUDE.snippet.md` → append to `~/.claude/CLAUDE.md`
 - `contract/AGENTS.snippet.md` → append to `~/.codex/AGENTS.md`
@@ -72,7 +72,7 @@ Repo-local `test_cmd`, `build_cmd`, and `eval_cmd` entries add an independent pr
 
 ## The loop
 
-1. Plan (Claude) → 2. Critique (Codex) → 3. Implement (Codex, sandboxed) → 4. Open PR (driver) → 5. Review (Claude) → 6. Apply edits (Codex) → 7. Deploy (risk-gated).
+1. Plan (Sol) → 2. Critique (fresh Sol) → 3. Implement (Terra, sandboxed) → 4. Open PR → 5. One risk-tiered final review → 6. Apply verified edits → 7. Deploy (separately gated).
 
 ## Safety
 
@@ -88,6 +88,7 @@ Repo-local `test_cmd`, `build_cmd`, and `eval_cmd` entries add an independent pr
 claude/skills/orchestrate/SKILL.md       Claude Code conductor and validated review entry
 claude/skills/orchestrate/references/    deploy safety, loop mechanics, Desktop bridge
 codex/skills/orchestrate/                the Codex CLI side: skill, references, validator
+codex/agents/                            six Codex model-role profiles used by the skill
 scripts/orchestrate.sh                   headless Codex-leg driver
 scripts/orchestrate_verify.py            safe TOML/argv verifier and test-delta classifier
 scripts/claude_review.py                 subscription-aware Claude auth/result validator
@@ -108,4 +109,4 @@ bash -n orchestrate/install.sh orchestrate/scripts/orchestrate.sh
 python3 -m unittest discover -s orchestrate/tests -v
 ```
 
-Licensed for internal reuse; adapt freely.
+MIT licensed; adapt freely.

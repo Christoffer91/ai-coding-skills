@@ -78,7 +78,7 @@ def main() -> int:
         "internal-only",
         "external_review_allowance: unused",
         "`unused|consumed`",
-        "atomically compare and set",
+        "atomically consume",
         "JSON `command` array",
         "underlying Claude command",
         "Every dispatched attempt remains consumed",
@@ -87,8 +87,13 @@ def main() -> int:
         "malformed output",
         "missing model metadata",
         "tool/data-policy rejection",
-        "eligible Fable-to-Opus fallback",
-        "new explicit `$orchestrate` invocation",
+        "eligible exceptional Fable-to-Opus",
+        "external_review_budget",
+        "maximum: 3",
+        "idempotency",
+        "Sonnet for important work",
+        "Claude Opus for",
+        "Fable is exceptional",
         "preflight failure",
         "Goal-scoped action authorization",
         "Never ask again",
@@ -101,8 +106,17 @@ def main() -> int:
         if required not in skill_text:
             errors.append(f"SKILL.md missing contract text: {required}")
 
-    pipeline_dir = skill_dir.parent / "pipeline"
-    pipeline_text = (pipeline_dir / "SKILL.md").read_text(encoding="utf-8")
+    pipeline_candidates = (
+        skill_dir.parent / "pipeline",
+        skill_dir.parents[3] / "pipeline/codex/skills/pipeline",
+    )
+    pipeline_dir = next((path for path in pipeline_candidates if (path / "SKILL.md").is_file()), None)
+    if pipeline_dir is None:
+        rendered = ", ".join(str(path) for path in pipeline_candidates)
+        errors.append(f"missing pipeline skill; checked: {rendered}")
+        pipeline_text = ""
+    else:
+        pipeline_text = (pipeline_dir / "SKILL.md").read_text(encoding="utf-8")
     for required in (
         "EXECUTION_PROFILE=AUTO|DIRECT|FAST|STANDARD|DEEP",
         "MICRO_SPEC",
@@ -113,9 +127,10 @@ def main() -> int:
     ):
         if required not in pipeline_text:
             errors.append(f"pipeline missing contract text: {required}")
-    spec_reference = pipeline_dir / "references/spec-driven-plan.md"
-    if not spec_reference.is_file():
-        errors.append(f"missing spec-driven plan reference: {spec_reference}")
+    if pipeline_dir is not None:
+        spec_reference = pipeline_dir / "references/spec-driven-plan.md"
+        if not spec_reference.is_file():
+            errors.append(f"missing spec-driven plan reference: {spec_reference}")
 
     claude_reference = skill_dir / "references/claude-plan-critique.md"
     if not claude_reference.is_file():
@@ -123,24 +138,19 @@ def main() -> int:
     else:
         claude_text = claude_reference.read_text(encoding="utf-8")
         for required in (
-            "explicit approval",
+            "explicit outbound approval",
             "--model fable",
             "--fallback-model opus",
             "--safe-mode",
             '--tools ""',
             "stdin",
-            "standing authorization",
+            "goal budget",
             "--approved-outbound",
-            "same turn",
-            "redundant second approval",
-            "JSON `command` array",
-            "shell-escaped informational argv",
-            "not the `run-review` wrapper",
-            "atomically change the allowance",
-            "`unused` to `consumed`",
+            "idempotency key",
+            "atomically consume",
             "Any runner dispatch consumes",
             "failed preflight sends no packet",
-            "separate explicit outbound approval",
+            "--json-schema",
         ):
             if required not in claude_text:
                 errors.append(f"Claude critique reference missing: {required}")
@@ -154,19 +164,17 @@ def main() -> int:
     else:
         final_review_text = claude_final_review.read_text(encoding="utf-8")
         for required in (
-            "standing authorization",
-            "--approved-outbound",
-            "same turn",
-            "redundant second approval",
-            "separate explicit approval",
-            "additional paid call",
-            "JSON `command` array",
-            "shell-escaped informational argv",
-            "not the `run-review` wrapper",
-            "atomically change the allowance",
+            "goal-scoped budget",
+            "--review-tier important",
+            "--review-tier exceptional",
+            "idempotency key",
+            "atomically consume",
             "Any runner dispatch consumes",
             "failed preflight sends no packet",
-            "plan critique already consumed",
+            "Claude Code `sonnet` alias",
+            "Security-critical work uses `opus`",
+            "Fable is exceptional",
+            "--json-schema",
         ):
             if required not in final_review_text:
                 errors.append(f"Claude final review reference missing: {required}")
@@ -177,33 +185,43 @@ def main() -> int:
         preflight_text = claude_preflight.read_text(encoding="utf-8")
         for required in (
             "same absolute path",
-            "auth status --json",
-            "omit `--max-budget-usd`",
-            "monthly Agent SDK allowance",
-            "exactly once",
-            "modelUsage",
-            "estimated model cost",
-            "standing outbound authorization",
+            "omit a USD cap",
+            "consume plan quota",
+            "goal policy",
             "--approved-outbound",
             "same turn",
-            "redundant second approval",
+            "redundant approval",
             "internal-only",
-            "default `$2` metered cap",
-            "zero retries after data-policy rejection",
-            "`command` to be an array of strings",
-            "without adding, removing, or reordering argv",
+            "default `$2`",
+            "zero Claude retries",
+            "array of strings",
             "not the shared `run-review` wrapper",
-            "printing it is not an approval gate",
-            "atomically compare and set",
-            "EXTERNAL_REVIEW_BLOCKED:preflight",
-            "leaves the allowance `unused`",
-            "keep `external_review_allowance: consumed`",
+            "atomically consume",
+            "EXTERNAL_REVIEW_BLOCKED:data-policy",
+            "leaves the allowance unused",
             "timeout",
+            "--json-schema",
+            "no `--max-turns` flag",
+            "--model sonnet",
+            "--model opus",
         ):
             if required not in preflight_text:
                 errors.append(f"Claude CLI preflight reference missing: {required}")
         if "resolved `run-review` command" in preflight_text:
             errors.append("Claude CLI preflight must not label its command array as a resolved run-review command")
+
+    review_policy = skill_dir / "references/review-policy.md"
+    if not review_policy.is_file():
+        errors.append(f"missing review policy: {review_policy}")
+    else:
+        review_policy_text = review_policy.read_text(encoding="utf-8")
+        for required in (
+            "DETERMINISTIC", "FAST", "STANDARD", "IMPORTANT", "SECURITY", "EXCEPTIONAL",
+            "Claude Sonnet", "Claude Opus", "Fable is not the default", "at most three",
+            "idempotency key", "Do not review every push", "blocking security finding",
+        ):
+            if required not in review_policy_text:
+                errors.append(f"review policy missing: {required}")
 
     writable = [name for name, (_, _, sandbox, _) in EXPECTED.items() if sandbox == "workspace-write"]
     if writable != ["orchestrate_executor"]:
@@ -271,8 +289,9 @@ def main() -> int:
             or security.get("claude_auth_preflight_required") is not True
             or security.get("subscription_default_budget_flag") != "omitted"
             or security.get("metered_default_budget_usd") != 2
-            or security.get("direct_opus_fallback_limit") != 1
-            or security.get("direct_opus_fallback_trigger") != "strict-fable-unavailable-only"
+            or security.get("review_tier") != "SECURITY"
+            or security.get("external_model") != "opus"
+            or security.get("direct_opus_fallback_limit") != 0
             or security.get("shared_claude_runner_required") is not True
             or security.get("result_model_metadata_required") is not True
             or security.get("data_policy_rejection_state") != "EXTERNAL_REVIEW_BLOCKED:data-policy"
@@ -281,7 +300,7 @@ def main() -> int:
             or security.get("required_external_gate") != "single-human-decision"
             or security.get("baton_polling") is not False
         ):
-            errors.append("external Claude scenario must enforce binary, auth, budget, fallback, metadata, and data-policy bounds")
+            errors.append("security review scenario must enforce Opus, auth, budget, metadata, and data-policy bounds")
         explicit_external = by_id["explicit-orchestrate-external-review"]
         if (
             explicit_external.get("explicit_skill_invocation") is not True
@@ -292,6 +311,8 @@ def main() -> int:
             or explicit_external.get("extra_comparative_paid_calls_authorized") is not False
             or explicit_external.get("subscription_metered_policy_unchanged") is not True
             or explicit_external.get("data_policy_retry_limit") != 0
+            or explicit_external.get("review_tier") != "IMPORTANT"
+            or explicit_external.get("external_model") != "sonnet"
         ):
             errors.append("explicit $orchestrate must preserve the bounded external-review policy")
         expected_preflight_command = {
@@ -305,7 +326,7 @@ def main() -> int:
         if explicit_external.get("preflight_output_command") != expected_preflight_command:
             errors.append("explicit review must render the exact preflight command array as informational underlying Claude argv")
         expected_allowance = {
-            "scope": "explicit-invocation",
+            "scope": "eligible-pr-head",
             "states": ["unused", "consumed"],
             "initial": "unused",
             "required_before_standing_dispatch": "unused",
@@ -313,7 +334,11 @@ def main() -> int:
             "after_any_dispatch_attempt": "consumed",
         }
         if explicit_external.get("allowance") != expected_allowance:
-            errors.append("explicit review must use an invocation-scoped atomic unused-to-consumed allowance")
+            errors.append("explicit review must use a per-PR atomic unused-to-consumed allowance")
+        if explicit_external.get("goal_budget") != {"maximum_eligible_prs": 3, "used": 1}:
+            errors.append("explicit review must use the bounded three-PR goal budget")
+        if explicit_external.get("idempotency_key") != "repo|pr|head-sha|policy-version":
+            errors.append("explicit review must use the PR/head/policy idempotency key")
         expected_dispatch = {
             "entrypoint": "shared-runner:run-review",
             "known_inputs": ["packet", "output"],
@@ -335,7 +360,7 @@ def main() -> int:
             },
         ]
         if explicit_external.get("review_sequence") != expected_sequence:
-            errors.append("the default route must preserve the one external allowance for final review")
+            errors.append("the default route must preserve external budget for the selected final review")
         expected_exclusions = {
             "extra-or-comparative-paid-calls",
             "secrets-customer-data-or-raw-transcripts",

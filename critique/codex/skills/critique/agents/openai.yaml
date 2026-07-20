@@ -1,0 +1,4 @@
+interface:
+  display_name: "Critique"
+  short_description: "Critical sparring and decision challenge"
+  default_prompt: "Use $critique to choose the right critique mode, challenge hidden assumptions, and tell me if this is actually solid."

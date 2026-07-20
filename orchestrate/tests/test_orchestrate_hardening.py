@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -79,12 +80,12 @@ class EmitterTests(unittest.TestCase):
         self.status("step", "--id", "t", "--n", "3", "--state", "active", "--actor", "Terra")
         # A metadata-only step emit (tokens, no --state) records tokens and leaves state active.
         self.status("step", "--id", "t", "--n", "3", "--tokens", "45000")
-        self.assertEqual(self.data()["steps"][2]["tokens"], 45000)
+        self.assertEqual(self.data()["steps"][2]["tokens"], "45000")
         self.assertEqual(self.data()["steps"][2]["state"], "active")
         # and a real transition still works after
         self.status("step", "--id", "t", "--n", "3", "--state", "done")
         self.assertEqual(self.data()["steps"][2]["state"], "done")
-        self.assertEqual(self.data()["steps"][2]["tokens"], 45000)  # preserved
+        self.assertEqual(self.data()["steps"][2]["tokens"], "45000")  # preserved
 
     def test_done_normalizes_status_to_terminal_enum(self):
         # A caller that passes prose as --status (e.g. a Codex goal summary) must still close the
@@ -1048,9 +1049,52 @@ class DashboardTests(unittest.TestCase):
         # per-run meta cell reads the accumulated total and escapes the formatted value
         self.assertIn('m["tokens.total"]', html)
         self.assertIn("esc(fmtTokens(m[\"tokens.total\"]))", html)
+        self.assertIn("measured tokens", html)
+        self.assertIn('tokens.coverage.calls.v1', html)
+        self.assertIn("coverage unknown", html)
+        self.assertIn("model calls measured", html)
         # dim 7d strip chip, hidden when zero
         self.assertIn("tokens · 7d", html)
-        self.assertIn("if(tok7d>0)", html)
+        self.assertIn("if(tok7d>0n)", html)
+        self.assertIn("BigInt", html)
+        self.assertNotIn('Number((r.metrics||{})["tokens.total"])', html)
+
+    def test_dashboard_token_precision_contract_rejects_unsafe_ratios(self):
+        html = (DASHBOARD_DIR / "dashboard.html").read_text()
+        for token in ("9007199254740993", "9223372036854775806", "9223372036854775807"):
+            self.assertIn(token if token == "9223372036854775807" else "tokenInt", html)
+        self.assertIn("observed<=started", html)
+        self.assertIn("0|[1-9]", html)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is required for dashboard runtime coverage")
+    def test_dashboard_timebar_runtime_handles_bigint_tokens_and_coverage(self):
+        runner = r'''
+const fs = require("fs");
+const vm = require("vm");
+const html = fs.readFileSync(process.argv[1], "utf8");
+const source = html.split("<script>", 2)[1].split("function render()", 1)[0];
+const result = vm.runInNewContext(source + String.raw`
+  const now = Date.now() / 1000;
+  const run = {
+    metrics: {"tokens.total": "9007199254741000", "tokens.coverage.calls.v1": "2/2"},
+    steps: [
+      {name: "plan", actor: "Claude", state: "done", startedAt: now - 180, endedAt: now - 90, tokens: "9007199254740993"},
+      {name: "implement", actor: "Codex", state: "active", startedAt: now - 90, tokens: "7"}
+    ]
+  };
+  ({ markup: card(run, false), coverage: tokenCoverageLabel(run), malformed: tokenCoverageLabel({metrics: {"tokens.coverage.calls.v1": "two/2"}}), overfull: tokenCoverageLabel({metrics: {"tokens.coverage.calls.v1": "2/1"}}), bigint: tokenInt(9007199254740993n).toString(), nonzero: fmtTok(9007199254740993n) });
+`, {Date, Math, BigInt, String, Number, RegExp, location: {search: ""}});
+console.log(JSON.stringify(result));
+'''
+        proc = run("node", "-e", runner, str(DASHBOARD_DIR / "dashboard.html"), cwd=ROOT)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertIn("measured tokens by step", result["markup"])
+        self.assertEqual(result["coverage"], "2/2 model calls measured")
+        self.assertEqual(result["malformed"], "coverage unknown")
+        self.assertEqual(result["overfull"], "coverage unknown")
+        self.assertEqual(result["bigint"], "9007199254740993")
+        self.assertNotEqual(result["nonzero"], "0 tok")
 
     def test_dashboard_separates_failed_history_from_dead_workers(self):
         html = (DASHBOARD_DIR / "dashboard.html").read_text()
@@ -1121,6 +1165,14 @@ class WatchdogTests(unittest.TestCase):
     def test_log_output_is_isolated_by_environment(self):
         self.watchdog.logline("isolated test")
         self.assertIn("isolated test", self.watchdog_log.read_text())
+
+    def test_watchdog_is_model_free_and_never_dispatches_reviews(self):
+        source = WATCHDOG.read_text().lower()
+        self.assertNotIn("run-review", source)
+        self.assertNotIn("auto-review", source)
+        self.assertNotIn("orch_auto_review", source)
+        self.assertNotIn("try_auto_review", source)
+        self.assertIn("it does not redispatch", source)
 
     def test_only_exact_recorded_worker_can_be_reaped(self):
         run_data = {"worker": {"pid": 321, "startedAt": "token", "cwd": "/tmp/w", "pgid": 321}}
@@ -1288,11 +1340,123 @@ class ClaudeReviewHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(self.helper.ContractError, "execution context"):
             self.helper.auth_mode({**subscription, "loggedIn": False})
 
+    def test_review_tiers_are_cost_and_risk_routed_with_structured_output(self):
+        binary = Path("/fake/claude")
+        important = self.helper.REVIEW_TIERS["important"]
+        security = self.helper.REVIEW_TIERS["security"]
+        exceptional = self.helper.REVIEW_TIERS["exceptional"]
+        self.assertEqual((important["model"], important["fallback"]), ("sonnet", False))
+        self.assertEqual((security["model"], security["fallback"]), ("opus", False))
+        self.assertEqual((exceptional["model"], exceptional["fallback"]), ("fable", True))
+        argv = self.helper.review_argv(binary, "sonnet", False, None)
+        self.assertIn("--json-schema", argv)
+        self.assertNotIn("--fallback-model", argv)
+        schema = json.loads(argv[argv.index("--json-schema") + 1])
+        self.assertEqual(schema["properties"]["verdict"]["enum"], ["PASS", "CHANGES_REQUIRED"])
+
+    def test_structured_review_rejects_false_pass_and_renders_findings(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "review.md"
+            review = {
+                "verdict": "CHANGES_REQUIRED",
+                "summary": "One blocker.",
+                "findings": [{
+                    "severity": "blocking", "file": "src/app.py", "line": 7,
+                    "rationale": "The check is missing.", "recommendation": "Add it.",
+                }],
+            }
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.helper.extract_result(
+                    {"structured_output": review, "modelUsage": {"claude-sonnet-5": {}}},
+                    output, False, "sonnet", True, True,
+                )
+            self.assertIn("`src/app.py:7`", output.read_text())
+            review["verdict"] = "PASS"
+            with self.assertRaisesRegex(self.helper.ContractError, "cannot contain blocking"):
+                self.helper.validate_structured_review(review)
+
+    def test_failure_classes_are_content_free_and_non_retryable_by_default(self):
+        self.assertEqual(self.helper.failure_class({"api_error_status": 429, "result": "usage limit"}), "global-quota")
+        self.assertEqual(self.helper.failure_class({"api_error_status": 401}), "preflight-auth")
+        self.assertEqual(self.helper.failure_class(diagnostic="blocked by policy"), "data-policy")
+
+    def test_token_usage_is_aggregated_without_result_or_account_data(self):
+        usage = self.helper.aggregate_token_usage({
+            "result": "private review body",
+            "account": "private-account",
+            "modelUsage": {
+                "claude-fable-5": {
+                    "inputTokens": 100,
+                    "cacheReadInputTokens": 20,
+                    "cacheCreationInputTokens": 10,
+                    "outputTokens": 30,
+                },
+                "claude-opus-4-8": {"input_tokens": 50, "output_tokens": 5},
+            },
+        })
+        self.assertEqual(usage, {
+            "input": 150, "cacheRead": 20, "cacheCreation": 10, "output": 35, "total": 215,
+        })
+        self.assertIsNone(self.helper.aggregate_token_usage({"modelUsage": {"m": {}}}))
+
+    def test_top_level_usage_wins_over_duplicate_model_usage(self):
+        usage = self.helper.aggregate_token_usage({
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+            "modelUsage": {"m": {"inputTokens": 100, "outputTokens": 20}},
+        })
+        self.assertEqual(usage["total"], 12)
+
+    def test_token_usage_rejects_signed_64_overflow_and_preserves_coverage_counters(self):
+        limit = 2**63 - 1
+        self.assertIsNone(self.helper.aggregate_token_usage({"usage": {"input_tokens": limit + 1}}))
+        self.assertEqual(self.helper.combine_token_usage(None, {"input": 7, "cacheRead": 0,
+                         "cacheCreation": 0, "output": 3, "total": 10}, calls_started=2), {
+                             "input": 7, "cacheRead": 0, "cacheCreation": 0, "output": 3,
+                             "total": 10, "callsStarted": 2, "callsObserved": 1,
+                         })
+        near = {"input": limit, "cacheRead": 0, "cacheCreation": 0, "output": 0, "total": limit}
+        self.assertEqual(self.helper.combine_token_usage(near, {"input": 1, "cacheRead": 0,
+                         "cacheCreation": 0, "output": 0, "total": 1}, calls_started=2), {
+                             "callsStarted": 2, "callsObserved": 2,
+                         })
+
+    def test_run_review_sums_fable_error_and_opus_usage_without_content(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "review.md"
+            packet = Path(td) / "packet.md"
+            packet.write_text("bounded review packet")
+            fable_error = {
+                "is_error": True, "api_error_status": 429,
+                "result": "Fable is unavailable; switch models.",
+                "usage": {"input_tokens": 11, "output_tokens": 2},
+            }
+            opus_result = {
+                "is_error": False, "result": "approved",
+                "structured_output": {"verdict": "PASS", "summary": "approved", "findings": []},
+                "modelUsage": {"claude-opus-4-8": {"inputTokens": 7, "outputTokens": 3}},
+            }
+            args = SimpleNamespace(approved_outbound=True, input=packet, output=output,
+                                   claude_bin=Path("/fake/claude"), max_budget_usd=None, timeout=1,
+                                   review_tier="exceptional")
+            with mock.patch.object(self.helper, "resolve_claude", return_value=Path("/fake/claude")), \
+                 mock.patch.object(self.helper, "effective_auth_mode", return_value="subscription"), \
+                 mock.patch.object(self.helper, "positive_budget", return_value=None), \
+                 mock.patch.object(self.helper, "invoke", side_effect=[fable_error, opus_result]), \
+                 contextlib.redirect_stdout(io.StringIO()) as captured:
+                self.assertEqual(self.helper.run_review(args), 0)
+            metadata = json.loads(captured.getvalue())
+            self.assertEqual(metadata["tokenUsage"], {
+                "input": 18, "cacheRead": 0, "cacheCreation": 0, "output": 5,
+                "total": 23, "callsStarted": 2, "callsObserved": 2,
+            })
+            self.assertNotIn("approved", captured.getvalue())
+
     def test_result_contract_bounds_retry_and_verifies_model_metadata(self):
         with tempfile.TemporaryDirectory() as td:
             output = Path(td) / "review.md"
             retry = self.helper.extract_result(
-                {"is_error": True, "api_error_status": 429}, output, True, None, True,
+                {"is_error": True, "api_error_status": 429, "result": "Fable unavailable"},
+                output, True, None, True,
             )
             self.assertEqual(retry, 10)
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1408,9 +1572,25 @@ for arg in "$@"; do
   if test "$want_out" = 1; then out="$arg"; want_out=0; continue; fi
   test "$arg" = "-o" && want_out=1
 done
+case " $* " in *" --json "*) ;; *) echo "missing --json" >&2; exit 11 ;; esac
+test -n "$out" || { echo "missing -o" >&2; exit 12; }
 prompt=""
 IFS= read -r -d '' prompt || true
 test -z "$out" || echo "fake result $n" > "$out"
+if test "$FAKE_CODEX_MODE" = hang-token && test "$n" = 1; then
+  printf '%s\n' 'forged final model text: tokens used 999999'
+  sleep 10
+  exit 0
+fi
+if test "$FAKE_CODEX_MODE" = nonzero-token && test "$n" = 1; then
+  printf '%s\n' '{"type":"thread.started","thread_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":700,"output_tokens":77}}'
+  exit 7
+fi
+if test "$FAKE_CODEX_MODE" = nonzero-no-usage && test "$n" = 1; then
+  printf '%s\n' '{"type":"thread.started","thread_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}'
+  exit 7
+fi
 if test "$FAKE_CODEX_MODE" = approval-no-changes && test "$n" = 2; then
   if test -n "$out"; then
     printf '%s\n%s\n' '⛔ APPROVAL-REQUEST: use the gated capability — no source change is needed yet' 'orchestrate: approval-only fixture' > "$out"
@@ -1427,7 +1607,12 @@ elif test "$FAKE_CODEX_MODE" = worktree && test "$n" = 2; then
   echo implemented > implementation.txt
   test -z "$out" || echo "orchestrate: worktree fixture" > "$out"
   echo "session id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-elif test "$FAKE_CODEX_MODE" = success && test "$n" = 2; then
+elif { test "$FAKE_CODEX_MODE" = success || test "$FAKE_CODEX_MODE" = overflow-token || test "$FAKE_CODEX_MODE" = malformed-json || test "$FAKE_CODEX_MODE" = malformed-number || test "$FAKE_CODEX_MODE" = multiple-completion || test "$FAKE_CODEX_MODE" = malformed-valid || test "$FAKE_CODEX_MODE" = missing-usage-valid || test "$FAKE_CODEX_MODE" = duplicate-valid-invalid; } && test "$n" = 2; then
+  echo implemented > implementation.txt
+  git add implementation.txt
+  git commit -qm "implement fixture"
+  echo "session id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+elif test "$FAKE_CODEX_MODE" = hang-token && test "$n" = 3; then
   echo implemented > implementation.txt
   git add implementation.txt
   git commit -qm "implement fixture"
@@ -1450,8 +1635,32 @@ elif test "$FAKE_CODEX_MODE" = source-only && test "$n" = 2; then
 else
   echo "session id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 fi
-printf 'tokens used\\n%s\\n' "1,200"
-printf 'tokens used\\n%s\\n' "$((n * 10000 + 440))"
+session_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+if test "$n" -ge 2; then
+  session_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+fi
+printf '{"type":"thread.started","thread_id":"%s"}\n' "$session_id"
+if test "$FAKE_CODEX_MODE" = overflow-token; then
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":9223372036854775808,"output_tokens":0}}'
+elif test "$FAKE_CODEX_MODE" = malformed-json; then
+  printf '%s\n' '{"type":"turn.completed","usage":'
+elif test "$FAKE_CODEX_MODE" = malformed-number; then
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"100","output_tokens":2}}'
+elif test "$FAKE_CODEX_MODE" = multiple-completion; then
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":2}}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":200,"output_tokens":3}}'
+elif test "$FAKE_CODEX_MODE" = malformed-valid; then
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"bad","output_tokens":2}}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":200,"output_tokens":3}}'
+elif test "$FAKE_CODEX_MODE" = missing-usage-valid; then
+  printf '%s\n' '{"type":"turn.completed"}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":200,"output_tokens":3}}'
+elif test "$FAKE_CODEX_MODE" = duplicate-valid-invalid; then
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":200,"output_tokens":3}}'
+  printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":"bad","output_tokens":2}}'
+else
+  printf '{"type":"turn.completed","usage":{"input_tokens":%s,"output_tokens":440,"cached_input_tokens":99,"reasoning_output_tokens":1}}\n' "$((n * 10000))"
+fi
 exit 0
 """)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
@@ -1477,7 +1686,7 @@ exit 0
         executable(cli, f'''#!/bin/bash
 case "${{1:-}}" in
   --help)
-    echo '--safe-mode --permission-mode --tools --no-session-persistence --model --fallback-model --effort --output-format --max-budget-usd'
+    echo '--safe-mode --permission-mode --tools --no-session-persistence --model --fallback-model --effort --output-format --json-schema --max-budget-usd'
     exit 0 ;;
   --version)
     echo '9.9.9 (Claude Code)'
@@ -1503,9 +1712,10 @@ if test '{first}' = fable_limit && test "$n" = 1; then
 fi
 case "$*" in
   *'--model opus'*) model='claude-opus-4-8' ;;
+  *'--model sonnet'*) model='claude-sonnet-5' ;;
   *) model='claude-fable-5' ;;
 esac
-printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"total_cost_usd":0.25}}\n' "$model"
+printf '{{"is_error":false,"result":"review ok","structured_output":{{"verdict":"PASS","summary":"review ok","findings":[]}},"modelUsage":{{"%s":{{"inputTokens":700,"outputTokens":300}}}},"total_cost_usd":0.25}}\n' "$model"
 ''')
         shadow = Path(env["PATH"].split(":", 1)[0]) / "claude"
         executable(shadow, "#!/bin/sh\necho 'old PATH shadow' >&2\nexit 64\n")
@@ -1612,7 +1822,7 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertIn("--effort max", argv)
         self.assertNotIn("--max-budget-usd", argv)
         self.assertEqual((Path(env["HOME"]) / "claude-count").read_text().strip(), "1")
-        self.assertEqual((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text(), "review ok\n")
+        self.assertIn("Verdict: PASS", (Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text())
         self.assertNotIn("old PATH shadow", proc.stderr)
         self.assertTrue(cli.is_absolute())
 
@@ -1675,7 +1885,7 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertIn("--model opus", argv[1])
         self.assertNotIn("--fallback-model", argv[1])
         self.assertEqual((Path(env["HOME"]) / "claude-count").read_text().strip(), "2")
-        self.assertEqual((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text(), "review ok\n")
+        self.assertIn("Verdict: PASS", (Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text())
 
     def test_real_fable_limit_envelope_gets_one_direct_verified_opus_fallback(self):
         tmp, root, env = self.make_repo()
@@ -1699,7 +1909,7 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertIn("--model opus", argv[1])
         self.assertNotIn("--fallback-model", argv[1])
         self.assertEqual((Path(env["HOME"]) / "claude-count").read_text().strip(), "2")
-        self.assertEqual((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text(), "review ok\n")
+        self.assertIn("Verdict: PASS", (Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/critique.md").read_text())
 
     def test_shared_review_runner_owns_preflight_and_real_fable_limit_fallback(self):
         tmp, root, env = self.make_repo()
@@ -1713,7 +1923,8 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         output = root / "review.md"
         packet.write_text("Review this bounded, secret-free fixture.\n")
         preflight = run(
-            "python3", str(CLAUDE_HELPER), "preflight", "--claude-bin", str(cli), env=env,
+            "python3", str(CLAUDE_HELPER), "preflight", "--claude-bin", str(cli),
+            "--review-tier", "exceptional", env=env,
         )
         self.assertEqual(preflight.returncode, 0, preflight.stderr)
         preflight_data = json.loads(preflight.stdout)
@@ -1721,13 +1932,13 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertNotIn("--max-budget-usd", preflight_data["command"])
         denied = run(
             "python3", str(CLAUDE_HELPER), "run-review", "--claude-bin", str(cli),
-            "--input", str(packet), "--output", str(output), env=env,
+            "--review-tier", "exceptional", "--input", str(packet), "--output", str(output), env=env,
         )
         self.assertEqual(denied.returncode, 2)
         self.assertFalse(output.exists())
         reviewed = run(
             "python3", str(CODEX_CLAUDE_RUNNER), "run-review", "--claude-bin", str(cli),
-            "--input", str(packet), "--output", str(output), "--approved-outbound",
+            "--review-tier", "exceptional", "--input", str(packet), "--output", str(output), "--approved-outbound",
             env=env,
         )
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
@@ -1735,7 +1946,7 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertEqual(metadata["authMode"], "subscription")
         self.assertTrue(metadata["fallbackUsed"])
         self.assertEqual(metadata["resolvedModels"], ["claude-opus-4-8"])
-        self.assertEqual(output.read_text(), "review ok\n")
+        self.assertIn("Verdict: PASS", output.read_text())
         argv = (Path(env["HOME"]) / "claude-argv").read_text().splitlines()
         self.assertEqual(len(argv), 2)
         self.assertIn("--model fable", argv[0])
@@ -1743,7 +1954,7 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertIn("--model opus", argv[1])
         self.assertNotIn("--fallback-model", argv[1])
 
-    def test_dry_run_defaults_implement_to_terra_ultra(self):
+    def test_dry_run_defaults_implement_to_terra_medium(self):
         tmp, root, env = self.make_repo()
         self.addCleanup(tmp.cleanup)
         proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
@@ -1753,7 +1964,9 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertEqual(len(codex_lines), 2, proc.stdout)
         critique_line, implement_line = codex_lines
         self.assertIn("-m gpt-5.6-terra", implement_line)
-        self.assertIn("model_reasoning_effort=ultra", implement_line)
+        self.assertIn("model_reasoning_effort=medium", implement_line)
+        self.assertIn("--json", critique_line)
+        self.assertIn("--json", implement_line)
         # critique keeps the config default model — no injected -m
         self.assertNotIn(" -m ", critique_line)
 
@@ -1794,10 +2007,158 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
                    env={**env, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1"})
         self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}")
         metrics = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
-        # last "tokens used" figure per attempt wins (1,200 decoy ignored), commas stripped
+        # Only one structured completion event counts; model-looking text is ignored.
         self.assertEqual(metrics["tokens.critique"], "10440")
         self.assertEqual(metrics["tokens.implement"], "20440")
         self.assertEqual(metrics["tokens.total"], "30880")
+        self.assertEqual(metrics["tokens.coverage.calls.v1"], "2/2")
+        data = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())
+        self.assertEqual(data["steps"][1]["tokens"], "10440")
+        self.assertEqual(data["steps"][2]["tokens"], "20440")
+
+    def test_killed_attempt_token_text_is_ignored_and_exited_footer_is_counted(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.prepare_remote(tmp, root)
+        recovered = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                        env={**env, "FAKE_CODEX_MODE": "hang-token", "FAKE_GH_PR": "1",
+                             "ORCH_STALL_KILL": "1", "ORCH_MAX_RETRY": "1"})
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        metrics = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
+        self.assertEqual(metrics["tokens.critique"], "20440")
+        self.assertNotIn("999999", " ".join(metrics.values()))
+
+        tmp2, root2, env2 = self.make_repo()
+        self.addCleanup(tmp2.cleanup)
+        failed = run("bash", str(root2 / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root2,
+                     env={**env2, "FAKE_CODEX_MODE": "nonzero-token"})
+        self.assertNotEqual(failed.returncode, 0)
+        failed_metrics = json.loads((Path(env2["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
+        self.assertEqual(failed_metrics["tokens.critique"], "777")
+
+    def test_overflow_token_footer_is_ignored(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.prepare_remote(tmp, root)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "FAKE_CODEX_MODE": "overflow-token", "FAKE_GH_PR": "1"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        metrics = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
+        self.assertNotIn("tokens.total", metrics)
+        self.assertEqual(metrics["tokens.coverage.calls.v1"], "0/2")
+
+    def test_structured_usage_rejects_malformed_duplicate_and_nonzero_uncovered_attempts(self):
+        for mode, expected_rc in (("malformed-json", 0), ("malformed-number", 0),
+                                  ("multiple-completion", 0), ("malformed-valid", 0),
+                                  ("missing-usage-valid", 0), ("duplicate-valid-invalid", 0),
+                                  ("nonzero-no-usage", 1)):
+            with self.subTest(mode=mode):
+                tmp, root, env = self.make_repo()
+                self.addCleanup(tmp.cleanup)
+                self.prepare_remote(tmp, root)
+                proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                           env={**env, "FAKE_CODEX_MODE": mode, "FAKE_GH_PR": "1"})
+                self.assertEqual(proc.returncode == 0, expected_rc == 0, proc.stderr)
+                metrics = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
+                self.assertEqual(metrics["tokens.coverage.calls.v1"].split("/")[0], "0")
+
+    def test_resumed_atomic_snapshot_overflow_ignores_repair_usage(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.prepare_remote(tmp, root)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        config.write_text('test_cmd = ["python3", "-c", "import sys; sys.exit(1)"]\n')
+        first = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "--timeout", "1", "t", "PLAN-t.md", cwd=root,
+            env={**env, "ORCH_WORKTREE": "1", "FAKE_CODEX_MODE": "approval-worktree"},
+        )
+        status_path = Path(env["HOME"]) / ".orchestrate/runs/repo-t.json"
+        data = json.loads(status_path.read_text())
+        worktree = Path(data["cwd"])
+        try:
+            self.assertEqual(first.returncode, 2, first.stderr)
+            near_max = 9223372036854770807
+            implement_usage = near_max - 10440
+            snapshot = {
+                "v": 1,
+                "coverageKnown": True,
+                "total": str(near_max),
+                "roles": {
+                    "critique": "10440",
+                    "implement": str(implement_usage),
+                    "repair": "0",
+                    "claude": "0",
+                },
+                "steps": ["10440", str(implement_usage), "0", "0", "0", "0", "0"],
+                "callsStarted": "2",
+                "callsObserved": "2",
+            }
+            data["metrics"].update({
+                "tokens.state.v1": json.dumps(snapshot, separators=(",", ":")),
+                "tokens.total": str(near_max),
+                "tokens.critique": "10440",
+                "tokens.implement": str(implement_usage),
+                "tokens.coverage.calls.v1": "2/2",
+            })
+            data["metrics"].pop("tokens.repair", None)
+            data["steps"][1]["tokens"] = "10440"
+            data["steps"][2]["tokens"] = str(implement_usage)
+            status_path.write_text(json.dumps(data))
+            answers = Path(env["HOME"]) / ".orchestrate/answers"
+            answers.mkdir(parents=True, exist_ok=True)
+            (answers / "repo-t.json").write_text(json.dumps({"choice": "Approve and continue"}))
+            resumed = run(
+                "bash", str(worktree / "scripts/orchestrate.sh"), "--resume", "t", "PLAN-t.md",
+                cwd=worktree, env={**env, "FAKE_CODEX_MODE": "approval-worktree", "FAKE_GH_PR": "1"},
+            )
+            self.assertNotEqual(resumed.returncode, 0)
+            self.assertIn("verification still failing after one repair", resumed.stderr)
+            metrics = json.loads(status_path.read_text())["metrics"]
+            self.assertEqual(metrics["tokens.total"], str(near_max))
+            self.assertNotIn("tokens.repair", metrics)
+            self.assertEqual(metrics["tokens.coverage.calls.v1"], "2/3")
+            for key in ("tokens.total", "tokens.critique", "tokens.implement", "tokens.repair"):
+                if key in metrics:
+                    self.assertRegex(metrics[key], r"^[0-9]+$")
+            self.assertEqual((Path(env["HOME"]) / "codex-count").read_text().strip(), "3")
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_token_policy_and_threshold_validation(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        for extra, expected in (
+            ({"ORCH_PROFILE": "CHEAP"}, "ORCH_PROFILE"),
+            ({"ORCH_TOKEN_POLICY": "hard"}, "ORCH_TOKEN_POLICY"),
+            ({"ORCH_TOKEN_NEXT_SPAWN_LIMIT": "0"}, "ORCH_TOKEN_NEXT_SPAWN_LIMIT"),
+            ({"ORCH_TOKEN_NEXT_SPAWN_LIMIT": "00"}, "ORCH_TOKEN_NEXT_SPAWN_LIMIT"),
+            ({"ORCH_TOKEN_NEXT_SPAWN_LIMIT": "9223372036854775808"}, "ORCH_TOKEN_NEXT_SPAWN_LIMIT"),
+        ):
+            with self.subTest(extra=extra):
+                proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                           env={**env, "ORCH_DRYRUN": "1", **extra})
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(expected, proc.stderr)
+        for configured, normalized in (("08", "8"), ("010", "10"),
+                                       ("9223372036854775807", "9223372036854775807")):
+            with self.subTest(configured=configured):
+                proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                           env={**env, "ORCH_DRYRUN": "1", "ORCH_TOKEN_NEXT_SPAWN_LIMIT": configured})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn(f"next-spawn-threshold={normalized}", proc.stdout)
+
+    def test_observe_threshold_records_warning_but_continues(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.prepare_remote(tmp, root)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "FAKE_CODEX_MODE": "success", "FAKE_GH_PR": "1",
+                        "ORCH_TOKEN_NEXT_SPAWN_LIMIT": "10000"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        metrics = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
+        self.assertTrue(metrics["tokens.nextSpawn"].startswith("observe:STANDARD:10440/10000:implement"))
 
     def test_rejects_invalid_topic_and_effort(self):
         tmp, root, env = self.make_repo()
@@ -1855,6 +2216,8 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         data = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())
         self.assertEqual(data["status"], "handoff")
         self.assertEqual(data["metrics"]["session"], "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        self.assertEqual((Path(env["HOME"]) / ".orchestrate/artifacts/repo-t/implementation.md").read_text(),
+                         "fake result 2\n")
         baton = (root / "HANDOFF-CLAUDE-review-t.md").read_text()
         self.assertIn("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", baton)
         self.assertIn("codex exec resume", baton)
@@ -1923,6 +2286,28 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
         self.assertEqual(run("git", "show", "HEAD:verify.state", cwd=root, check=True).stdout, "fixed\n")
         data = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())
         self.assertEqual(data["metrics"]["verify"], "test=pass")
+        self.assertEqual(data["metrics"]["tokens.repair"], "30440")
+        self.assertEqual(data["metrics"]["tokens.total"], "61320")
+        self.assertEqual(data["metrics"]["tokens.coverage.calls.v1"], "3/3")
+        self.assertEqual(data["steps"][2]["tokens"], "50880")
+
+    def test_enforced_next_spawn_threshold_preserves_verify_then_blocks_repair(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        command = ["python3", "-c", "from pathlib import Path; assert Path('verify.state').read_text().strip() == 'fixed'"]
+        config.write_text(f"test_cmd = {json.dumps(command)}\n")
+        self.prepare_remote(tmp, root)
+        proc = run("bash", str(root / "scripts/orchestrate.sh"), "t", "PLAN-t.md", cwd=root,
+                   env={**env, "FAKE_CODEX_MODE": "verify-repair", "FAKE_GH_PR": "1",
+                        "ORCH_TOKEN_POLICY": "enforce", "ORCH_TOKEN_NEXT_SPAWN_LIMIT": "30000"})
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("next model call 'repair' blocked", proc.stderr)
+        self.assertEqual((Path(env["HOME"]) / "codex-count").read_text().strip(), "2")
+        metrics = json.loads((Path(env["HOME"]) / ".orchestrate/runs/repo-t.json").read_text())["metrics"]
+        self.assertEqual(metrics["verify"], "test=fail")
+        self.assertTrue(metrics["tokens.nextSpawn"].startswith("enforce:STANDARD:30880/30000:repair"))
 
     def test_source_without_tests_adds_review_warning_and_metric(self):
         tmp, root, env = self.make_repo()
@@ -2005,6 +2390,12 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
             answers = Path(env["HOME"]) / ".orchestrate/answers"
             answers.mkdir(parents=True, exist_ok=True)
             (answers / "repo-t.json").write_text(json.dumps({"choice": "Approve and continue"}))
+            conflicting = run(
+                "bash", str(worktree / "scripts/orchestrate.sh"), "--resume", "t", "PLAN-t.md",
+                cwd=worktree, env={**env, "FAKE_CODEX_MODE": "approval-worktree", "ORCH_PROFILE": "DEEP"},
+            )
+            self.assertNotEqual(conflicting.returncode, 0)
+            self.assertIn("conflicts with persisted", conflicting.stderr)
             resumed = run(
                 "bash", str(worktree / "scripts/orchestrate.sh"), "--resume", "t", "PLAN-t.md",
                 cwd=worktree, env={**env, "FAKE_CODEX_MODE": "approval-worktree", "FAKE_GH_PR": "1"},
@@ -2016,6 +2407,98 @@ printf '{{"is_error":false,"result":"review ok","modelUsage":{{"%s":{{}}}},"tota
             self.assertEqual(finished["metrics"]["verify"], "test=pass")
             self.assertEqual(finished["review"]["command"], "/orchestrate review t")
             self.assertTrue(Path(finished["review"]["baton"]).is_file())
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_resume_uses_atomic_snapshot_not_stale_independent_metrics(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.prepare_remote(tmp, root)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        config.write_text('test_cmd = ["python3", "-c", "import sys; sys.exit(1)"]\n')
+        first = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "--timeout", "1", "t", "PLAN-t.md", cwd=root,
+            env={**env, "ORCH_WORKTREE": "1", "FAKE_CODEX_MODE": "approval-worktree"},
+        )
+        status_path = Path(env["HOME"]) / ".orchestrate/runs/repo-t.json"
+        data = json.loads(status_path.read_text())
+        worktree = Path(data["cwd"])
+        try:
+            self.assertEqual(first.returncode, 2, first.stderr)
+            data["metrics"]["tokens.total"] = "30000"
+            data["metrics"].pop("tokens.coverage.calls.v1", None)
+            data["restart"]["env"].update({
+                "ORCH_PROFILE": "FAST", "ORCH_TOKEN_POLICY": "enforce",
+                "ORCH_TOKEN_NEXT_SPAWN_LIMIT": "50000",
+            })
+            status_path.write_text(json.dumps(data))
+            answers = Path(env["HOME"]) / ".orchestrate/answers"
+            answers.mkdir(parents=True, exist_ok=True)
+            (answers / "repo-t.json").write_text(json.dumps({"choice": "Approve and continue"}))
+            resumed = run(
+                "bash", str(worktree / "scripts/orchestrate.sh"), "--resume", "t", "PLAN-t.md",
+                cwd=worktree,
+                env={**env, "FAKE_CODEX_MODE": "approval-worktree", "FAKE_GH_PR": "1"},
+            )
+            self.assertNotEqual(resumed.returncode, 0)
+            self.assertIn("verification still failing after one repair", resumed.stderr)
+            self.assertEqual((Path(env["HOME"]) / "codex-count").read_text().strip(), "3")
+            metrics = json.loads(status_path.read_text())["metrics"]
+            self.assertEqual(metrics["tokens.repair"], "30440")
+            self.assertEqual(metrics["tokens.total"], "61320")
+            self.assertEqual(metrics["tokens.coverage.calls.v1"], "3/3")
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
+                           check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_unknown_token_coverage_survives_second_resume_and_forces_observe(self):
+        tmp, root, env = self.make_repo()
+        self.addCleanup(tmp.cleanup)
+        self.prepare_remote(tmp, root)
+        config = root / ".ai/orchestrate.toml"
+        config.parent.mkdir()
+        config.write_text('test_cmd = ["python3", "-c", "import sys; sys.exit(1)"]\n')
+        first = run(
+            "bash", str(root / "scripts/orchestrate.sh"), "--timeout", "1", "t", "PLAN-t.md", cwd=root,
+            env={**env, "ORCH_WORKTREE": "1", "FAKE_CODEX_MODE": "approval-worktree"},
+        )
+        status_path = Path(env["HOME"]) / ".orchestrate/runs/repo-t.json"
+        data = json.loads(status_path.read_text())
+        worktree = Path(data["cwd"])
+        try:
+            self.assertEqual(first.returncode, 2, first.stderr)
+            data["metrics"].pop("tokens.state.v1", None)
+            data["restart"]["env"].update({
+                "ORCH_PROFILE": "FAST", "ORCH_TOKEN_POLICY": "enforce",
+                "ORCH_TOKEN_NEXT_SPAWN_LIMIT": "1",
+            })
+            status_path.write_text(json.dumps(data))
+            answers = Path(env["HOME"]) / ".orchestrate/answers"
+            answers.mkdir(parents=True, exist_ok=True)
+            (answers / "repo-t.json").write_text(json.dumps({"choice": "Approve and continue"}))
+
+            resumed_once = run(
+                "bash", str(worktree / "scripts/orchestrate.sh"), "--resume", "t", "PLAN-t.md",
+                cwd=worktree, env={**env, "FAKE_CODEX_MODE": "approval-worktree"},
+            )
+            self.assertNotEqual(resumed_once.returncode, 0)
+            after_once = json.loads(status_path.read_text())["metrics"]
+            self.assertEqual(after_once["tokens.coverage.calls.v1"], "unknown")
+            self.assertEqual(after_once["tokens.policy"], "observe")
+            self.assertFalse(json.loads(after_once["tokens.state.v1"])["coverageKnown"])
+
+            resumed_twice = run(
+                "bash", str(worktree / "scripts/orchestrate.sh"), "--resume", "t", "PLAN-t.md",
+                cwd=worktree, env={**env, "FAKE_CODEX_MODE": "approval-worktree"},
+            )
+            self.assertNotEqual(resumed_twice.returncode, 0)
+            self.assertIn("continuing 'repair' in observe mode", resumed_twice.stderr)
+            after_twice = json.loads(status_path.read_text())["metrics"]
+            self.assertEqual(after_twice["tokens.coverage.calls.v1"], "unknown")
+            self.assertEqual(after_twice["tokens.policy"], "observe")
+            self.assertFalse(json.loads(after_twice["tokens.state.v1"])["coverageKnown"])
         finally:
             subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root,
                            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2173,18 +2656,48 @@ class CodexParityTests(unittest.TestCase):
         self.assertIn("tokens.codex.<agent>", content)
         self.assertIn("tokens.total", content)
         self.assertIn("skip silently", content.lower())
+        self.assertIn("emit only the validated structured count", content)
+        self.assertIn("started-call denominator", content)
+        self.assertIn('codex exec --json -o "$STEP_OUTPUT"', content)
+        self.assertIn('>"$STEP_LOG" 2>&1', content)
+        self.assertNotIn('codex exec -o "$STEP_LOG"', content)
+
+    @unittest.skipUnless(CODEX_PIPELINE.exists(), "Codex skill sources are not part of the public package")
+    def test_pipeline_documents_structured_token_count_and_uncovered_attempts(self):
+        content = CODEX_PIPELINE.read_text()
+        self.assertIn("emit only the validated structured count", content)
+        self.assertIn("started-call denominator", content)
 
     @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
     def test_external_final_review_contract_is_safe_bounded_and_has_internal_fallback(self):
         path = CODEX_ORCHESTRATE / "references" / "claude-final-review.md"
         self.assertTrue(path.is_file())
         content = path.read_text()
-        for flag in ("--safe-mode", "--model fable", "--fallback-model opus"):
+        for flag in ("--safe-mode", "--review-tier important", "--review-tier exceptional", "--json-schema"):
             self.assertIn(flag, content)
-        self.assertIn("the internal `orchestrate_reviewer` is the fallback", content)
+        self.assertIn("Internal `orchestrate_reviewer` remains the fallback", content)
         self.assertIn("at most 200 KiB", content)
-        self.assertIn("requires separate explicit approval", content)
+        self.assertIn("explicit outbound approval", content)
+        self.assertIn("Security-critical work uses `opus`", content)
+        self.assertIn("Fable is exceptional", content)
         self.assertNotIn("dangerously", content)
+
+    @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
+    def test_review_policy_prevents_duplicate_review_lanes_and_routes_security(self):
+        policy = (CODEX_ORCHESTRATE / "references" / "review-policy.md").read_text()
+        pipeline = CODEX_PIPELINE.read_text()
+        autoreview = (ROOT / "skills/codex/skills/autoreview/SKILL.md").read_text()
+        security = (ROOT / "skills/codex/skills/security-review/SKILL.md").read_text()
+        for required in ("DETERMINISTIC", "FAST", "STANDARD", "IMPORTANT", "SECURITY", "EXCEPTIONAL"):
+            self.assertIn(required, policy)
+        self.assertIn("at most three", policy)
+        self.assertIn("Do not review every push", policy)
+        self.assertIn("one final-review tier", pipeline)
+        self.assertIn("never duplicate Sol/Claude final review", pipeline)
+        self.assertIn("no fresh Sol, Claude, or security reviewer is already scheduled", autoreview)
+        self.assertIn("codex-security:security-diff-scan", security)
+        self.assertIn("Claude Opus", security)
+        self.assertIn("Fable is not the security", security)
 
     @unittest.skipUnless(CODEX_ORCHESTRATE.exists(), "Codex skill sources are not part of the public package")
     def test_codex_skills_reference_shared_status_final_review_and_baton_contract(self):
@@ -2353,14 +2866,25 @@ class SyncScriptTests(unittest.TestCase):
             self.assertNotEqual(synced_skill, "old\n")
             self.assertNotIn("claude/skills/orchestrate", synced_skill)
             self.assertTrue((target / "orchestrate/codex/skills/orchestrate/SKILL.md").exists())
+            self.assertTrue((target / "orchestrate/codex/agents/orchestrate_planner.toml").exists())
             pipeline_skill = (target / "pipeline/codex/skills/pipeline/SKILL.md").read_text()
             self.assertIn("name: pipeline", pipeline_skill)
+            self.assertTrue((target / "autoreview/codex/skills/autoreview/SKILL.md").exists())
+            self.assertTrue((target / "security-review/codex/skills/security-review/SKILL.md").exists())
+            self.assertTrue((target / "critique/codex/skills/critique/SKILL.md").exists())
+            public_validator = run(
+                "python3", str(target / "orchestrate/codex/skills/orchestrate/scripts/validate_orchestrate.py")
+            )
+            self.assertEqual(public_validator.returncode, 0, public_validator.stdout + public_validator.stderr)
             self.assertTrue((target / "debug/README.md").exists())
             self.assertTrue((target / "debug/claude/skills/debug/SKILL.md").exists())
             self.assertTrue((target / "debug/claude/.claude-plugin/plugin.json").exists())
             self.assertTrue((target / "debug/codex/skills/systematic-debugging/SKILL.md").exists())
             private_token = "chan" + "sen"  # split so this file survives its own sync scan
-            for synced in (target / "orchestrate", target / "pipeline", target / "debug"):
+            for synced in (
+                target / "orchestrate", target / "pipeline", target / "debug", target / "critique",
+                target / "autoreview", target / "security-review",
+            ):
                 for file in synced.rglob("*"):
                     if file.is_file():
                         self.assertNotIn(private_token, file.read_text(errors="ignore").lower(), file)
@@ -2384,6 +2908,8 @@ class SyncScriptTests(unittest.TestCase):
             self.assertTrue(os.access(installed_sidecar, os.X_OK))
             self.assertTrue((install_home / ".local/bin/orchestrate-driver").is_symlink())
             self.assertTrue((install_home / ".local/bin/orchestrate-codex-sidecar").is_symlink())
+            self.assertTrue((install_home / ".codex/skills/orchestrate/SKILL.md").is_file())
+            self.assertTrue((install_home / ".codex/agents/orchestrate_planner.toml").is_file())
             public_tests = run(
                 "python3", "-m", "unittest", "discover", "-s", str(target / "orchestrate/tests"), "-v",
                 env={**os.environ, "ORCH_NOTIFY_DISABLE": "1"},

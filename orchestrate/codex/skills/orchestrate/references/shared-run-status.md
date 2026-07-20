@@ -119,19 +119,19 @@ Emit both state and actor so Codex-primary runs do not inherit Claude-centric de
 metadata-only `step --n N --log ... --tokens ...` leaves the current step state unchanged.
 
 Give every phase its own captured output file under `$HOME/.orchestrate/artifacts/$RUN_ID/`
-(durable — never `$TMPDIR`). Every `step` emit MUST carry that path with `--log`. Token emission is
-likewise **mandatory for every codex phase, not best-effort**: every `codex exec` prints a trailing
-`tokens used` line (the integer, comma-formatted, on the following line), so "unavailable" applies
-only to non-codex phases. After each codex phase, extract and emit:
+(durable — never `$TMPDIR`). Every `step` emit MUST carry that path with `--log`. Token extraction is
+attempted for every Codex phase but remains non-fatal. After the process exits, extract only from one
+structured JSONL `turn.completed` event with a valid `usage` object; never parse model-authored output
+or a footer. Missing, malformed, duplicate, killed, or non-completing telemetry remains uncovered.
 
 ```bash
-TOK=$(awk 'prev ~ /tokens used/ {s=$0; gsub(/[,[:space:]]/,"",s); if (s ~ /^[0-9]+$/) last=s} {prev=$0} END{print last}' "$STEP_LOG")
+# The driver validates the JSONL event and must emit only the validated structured count when observed.
 [ -n "$TOK" ] && orch_emit step --id "$RUN_ID" --n "$STEP_N" --tokens "$TOK"
 ```
 
 The emitter stores both in `steps[N-1].log` / `steps[N-1].tokens`; clicking step 1–7 opens exactly
-that agent's output, and its token count appears beside the duration. Never estimate token usage —
-extract the printed count; omit `--tokens` only for phases that genuinely report none.
+that agent's output, and its token count appears beside the duration. Never estimate token usage;
+killed or hung attempts contribute no tokens but remain uncovered in the started-call denominator.
 
 | Step | Work | Actor | Notes |
 |---|---|---|---|
@@ -147,9 +147,11 @@ Example transition:
 
 ```bash
 STEP_LOG="$HOME/.orchestrate/artifacts/$RUN_ID/step-3-execute.log"
+STEP_OUTPUT="$HOME/.orchestrate/artifacts/$RUN_ID/step-3-execute-output.md"
 orch_emit step --id "$RUN_ID" --n 3 --state active \
   --actor "Terra · medium" --note "$SMALLEST_STEP" --log "$STEP_LOG"
-# Capture this phase's output in "$STEP_LOG", for example with `codex exec -o "$STEP_LOG" ...`.
+# Keep the final response and structured event stream separate: `-o` writes only the final response.
+codex exec --json -o "$STEP_OUTPUT" ... >"$STEP_LOG" 2>&1
 orch_emit step --id "$RUN_ID" --n 3 --state done \
   --actor "Terra · medium" --log "$STEP_LOG" --tokens "$STEP_TOKENS"
 # If the exact count arrives separately before terminal close, omit --state to preserve state:
@@ -218,9 +220,18 @@ orch_emit metric --id "$RUN_ID" --key "tokens.codex.$AGENT" --value "$AGENT_TOKE
 orch_emit metric --id "$RUN_ID" --key tokens.total --value "$TOKENS_TOTAL"
 ```
 
-Use stable agent names such as `planner`, `critic`, `executor`, and `reviewer`.
-If usage is unavailable or is not an integer, skip silently; token telemetry must
-never fail or change the orchestration run.
+Use stable agent names such as `planner`, `critic`, `executor`, and `reviewer`. Before each model
+call, increment the versioned call denominator; after a parseable result, increment its numerator:
+
+```bash
+orch_emit metric --id "$RUN_ID" --key "tokens.coverage.calls.v1" \
+  --value "$OBSERVED_TOKEN_CALLS/$STARTED_MODEL_CALLS"
+```
+
+Coverage is measured calls divided by started model calls, not populated dashboard steps. Repeated
+calls in one step add to that step's token total. If usage is unavailable or is not an integer, keep
+the call in the denominator and omit its token value; telemetry must never fail the task. Follow
+[token-budgeting.md](token-budgeting.md) for labels and next-spawn policy.
 
 ## Human gates
 

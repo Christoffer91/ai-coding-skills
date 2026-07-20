@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Review"
+  short_description: "Route security-sensitive review lanes"
+  default_prompt: "Use $security-review to assess the security surface and route the right review lanes."
