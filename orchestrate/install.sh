@@ -46,15 +46,21 @@ echo "  ✓ driver ready -> $HERE/scripts/orchestrate.sh"
 
 # Optional Codex-side skill (the executor's view of the same loop).
 CODEX_DEST="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
-if [[ -d "$HERE/codex/skills/orchestrate" && -d "$(dirname "$CODEX_DEST")" ]]; then
+CODEX_AGENTS_DEST="${CODEX_AGENTS_DIR:-$HOME/.codex/agents}"
+if [[ -d "$HERE/codex/skills/orchestrate" ]]; then
   mkdir -p "$CODEX_DEST"
   if [[ -e "$CODEX_DEST/orchestrate" ]]; then
     mv "$CODEX_DEST/orchestrate" "$CODEX_DEST/orchestrate.bak-$(date +%Y%m%d%H%M%S)"
   fi
   cp -R "$HERE/codex/skills/orchestrate" "$CODEX_DEST/orchestrate"
   echo "  ✓ codex skill installed -> $CODEX_DEST/orchestrate"
+  if [[ -d "$HERE/codex/agents" ]]; then
+    mkdir -p "$CODEX_AGENTS_DEST"
+    cp "$HERE/codex/agents/"orchestrate_*.toml "$CODEX_AGENTS_DEST/"
+    echo "  ✓ codex agent profiles installed -> $CODEX_AGENTS_DEST"
+  fi
 else
-  echo "  · codex skill skipped (no ~/.codex; set CODEX_SKILLS_DIR to force)"
+  echo "  · codex skill skipped (package does not contain a Codex projection)"
 fi
 
 link_tools() {

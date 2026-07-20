@@ -58,6 +58,17 @@ ACTIVE_STATUSES = frozenset(("running", "review"))
 CLOSABLE_STATUSES = ACTIVE_STATUSES | frozenset(("await", "paused", "handoff", "fail"))
 STEP_STATES = ("pending", "active", "done", "fail", "skipped")
 PR_STATES = ("OPEN", "CLOSED", "MERGED", "UNKNOWN")
+INT64_MAX = 9223372036854775807
+
+
+def token_decimal(value):
+    """Accept a nonnegative signed-64-bit decimal and retain it exactly."""
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+        raise argparse.ArgumentTypeError("tokens must be an ASCII decimal integer")
+    canonical = value.lstrip("0") or "0"
+    if int(canonical) > INT64_MAX:
+        raise argparse.ArgumentTypeError("tokens must not exceed signed 64-bit range")
+    return canonical
 
 
 def resume_command_arg(value):
@@ -287,7 +298,7 @@ def main():
     p.add_argument("--state", choices=STEP_STATES, default=None)
     p.add_argument("--note", default=None); p.add_argument("--actor", default=None); p.add_argument("--pid", type=int, default=None)
     p.add_argument("--log", default=None, help="absolute path to THIS run's console/output log")
-    p.add_argument("--tokens", type=int, default=None, help="tokens this step's agent used")
+    p.add_argument("--tokens", type=token_decimal, default=None, help="tokens this step's agent used")
     p.add_argument("--codex-session", default=None,
                    help="rollout locator; only an opaque reference is stored")
     p.add_argument("--codex-turn", default=None,
@@ -413,7 +424,7 @@ def main():
             log_abs = os.path.abspath(a.log)
             r["steps"][i]["log"] = log_abs
             r["consoleLog"] = log_abs
-        if a.tokens is not None and a.tokens >= 0:
+        if a.tokens is not None:
             r["steps"][i]["tokens"] = a.tokens   # per-step token count shown next to the step
         save(r)
 

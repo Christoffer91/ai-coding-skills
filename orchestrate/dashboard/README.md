@@ -48,6 +48,11 @@ explicit logs and `step-N-<role>.log` identify unambiguously per-step agent outp
 `metrics["tokens.total"]` is absent, zero, or nonnumeric, the 7-day header chip falls back to the
 sum of per-step tokens.
 
+Run totals are displayed as **measured tokens**, not complete or billable usage. Emit
+`tokens.coverage.calls.v1=<observed>/<started>` to report model-call coverage. A legacy run without
+that versioned metric renders `coverage unknown`; the dashboard does not infer coverage from its
+seven workflow steps because one step can contain zero, one, or several model calls.
+
 `gate`, `fail`, and `handoff` each send one notification. Set `ORCH_NOTIFY_CMD` to an executable path, or set repo-local `notify_cmd` in `.ai/orchestrate.toml` to a quoted path or argv array. The message is appended as one argument and the hook is killed after 10 seconds; no shell evaluates the config. On macOS, Notification Center is the desktop fallback when no hook is configured. Use a phone-capable hook or in-session `PushNotification` for Remote Control.
 
 ## Codex session liveness — `orchestrate-codex-sidecar`
@@ -111,8 +116,8 @@ escalates; it does NOT redispatch — use the dashboard's ↻ Restart button. Fl
 ## Naming — match your Claude chat
 The card shows the run's **title**. Set it to the same name you use for the work in
 your Claude chat so the dashboard lines up with your tabs:
-- driver:     `ORCH_TITLE="CoWriter loop" orchestrate.sh cowriter`
-- in-session: `orchestrate-status start --title "CoWriter loop" …`
+- driver:     `ORCH_TITLE="ExampleApp loop" orchestrate.sh example-app`
+- in-session: `orchestrate-status start --title "ExampleApp loop" …`
 
 ## Terminal view — orchestrate-watch
 `./orchestrate-watch` renders the same runs as the dashboard in your terminal:

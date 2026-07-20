@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autoreview"
+  short_description: "Review loop before final verification"
+  default_prompt: "Use $autoreview to review my current changes, validate findings against the code, and hand off final checks."

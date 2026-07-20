@@ -61,14 +61,16 @@
     "risk_gate": true,
     "explicit_skill_invocation": false,
     "standing_external_review_authorization": false,
-    "external_critique": "fable-with-opus-fallback",
+    "external_critique": "none",
+    "review_tier": "SECURITY",
+    "security_scan": "codex-security:security-diff-scan",
+    "external_model": "opus",
     "external_approval_required": true,
     "claude_absolute_binary_required": true,
     "claude_auth_preflight_required": true,
     "subscription_default_budget_flag": "omitted",
     "metered_default_budget_usd": 2,
-    "direct_opus_fallback_limit": 1,
-    "direct_opus_fallback_trigger": "strict-fable-unavailable-only",
+    "direct_opus_fallback_limit": 0,
     "shared_claude_runner_required": true,
     "result_model_metadata_required": true,
     "data_policy_rejection_state": "EXTERNAL_REVIEW_BLOCKED:data-policy",
@@ -85,6 +87,8 @@
     "profile": "STANDARD",
     "explicit_skill_invocation": true,
     "external_lane_selected": true,
+    "review_tier": "IMPORTANT",
+    "external_model": "sonnet",
     "standing_external_review_authorization": true,
     "secret_free_packet_required": true,
     "local_preflight_required": true,
@@ -97,7 +101,7 @@
       "informational_only": true
     },
     "allowance": {
-      "scope": "explicit-invocation",
+      "scope": "eligible-pr-head",
       "states": [
         "unused",
         "consumed"
@@ -107,6 +111,11 @@
       "transition": "atomic-unused-to-consumed-immediately-before-run-review-dispatch",
       "after_any_dispatch_attempt": "consumed"
     },
+    "goal_budget": {
+      "maximum_eligible_prs": 3,
+      "used": 1
+    },
+    "idempotency_key": "repo|pr|head-sha|policy-version",
     "runner_dispatch": {
       "entrypoint": "shared-runner:run-review",
       "known_inputs": [

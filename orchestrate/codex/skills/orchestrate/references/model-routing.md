@@ -19,12 +19,19 @@ Do not leave model or effort implicit. The user's parent session may be Sol Ultr
 |---|---|---|---|---|
 | `DIRECT` | Parent produces no implementation spec | None | Parent; no delegated write | None |
 | `FAST` | Pipeline `MICRO_SPEC`; no Sol Ultra | None unless escalated | `orchestrate_executor` Terra medium | Focused deterministic check only |
-| `STANDARD` | `orchestrate_planner` Sol Ultra `FULL_SPEC` | `orchestrate_plan_critic` Sol high, or approved Claude lane | `orchestrate_executor` Terra medium | Fresh `orchestrate_reviewer` Sol Ultra |
-| `DEEP` | Sol Ultra `FULL_SPEC` with high/xhigh evidence | Internal critic or approved Claude lane | Terra medium, one bounded slice at a time | Fresh Sol Ultra plus required domain gates |
+| `STANDARD` | `orchestrate_planner` Sol Ultra `FULL_SPEC` | `orchestrate_plan_critic` Sol high, or approved Claude lane | `orchestrate_executor` Terra medium | Fresh `orchestrate_reviewer` Sol Ultra; no autoreview duplicate |
+| `DEEP` | Sol Ultra `FULL_SPEC` with high/xhigh evidence | Internal critic or approved Claude lane | Terra medium, one bounded slice at a time | One lane from `review-policy.md` plus required domain gates |
 
 Risk and uncertainty override file count. FAST is allowed only when the solution, working set, invariant, success signal, and focused check are already concrete. Escalate `FAST -> STANDARD -> DEEP`; never downgrade within a run or reset by rephrasing.
 
 Full spec planning is deliberately Sol Ultra. Small work saves cost by avoiding a full spec, critic, and final reviewer rather than by weakening a plan that actually carries architectural or behavioral decisions.
+
+External model routing is risk-based, not prestige-based: Sonnet for important non-security review,
+Opus for security-critical second opinion, and Fable only for explicit exceptional architecture work.
+
+Use [token-budgeting.md](token-budgeting.md) for measured-call coverage, provisional profile
+thresholds, and promotion to enforcement. Do not weaken required planning or review based on partial
+telemetry; reduce duplicate packets and unnecessary model calls first.
 
 ## Evidence Selection
 
@@ -91,3 +98,5 @@ The critic follows `critique`, steelmans first, cuts weak objections, and maps a
 - Maximum 3 review/fix rounds.
 - Keep agent nesting at 2 only for planner/reviewer evidence fan-out; leaf agents do not delegate.
 - Apply `loop-controller` iteration, repeated-failure, no-progress, scope, command, and risk stops without reset-by-rephrasing.
+- Token thresholds are next-spawn guards, not hard caps. They default to observation and never skip
+  deterministic verification; see [token-budgeting.md](token-budgeting.md).

@@ -2,7 +2,7 @@
   "name": "ai-coding-skills",
   "description": "Portable Claude Code + Codex CLI skills: the orchestrate dual-brain shipping loop and the pipeline coverage-matrix workflow.",
   "owner": {
-    "name": "Christoffer91"
+    "name": "ai-coding-skills maintainers"
   },
   "plugins": [
     {

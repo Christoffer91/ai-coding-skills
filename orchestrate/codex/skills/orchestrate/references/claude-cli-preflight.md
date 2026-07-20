@@ -1,106 +1,103 @@
 # Claude CLI Review Preflight
 
-Use this contract for every authorized Claude plan critique or final review. The review packet leaves the machine, but Claude receives no tools and cannot edit the repository.
+Use this contract for every authorized Claude plan critique or final review. The review packet leaves
+the machine, but Claude receives no tools and cannot edit the repository.
 
-The mandatory automated path is `python3 ~/.codex/skills/orchestrate/scripts/claude_review.py preflight`, followed after standing or separate outbound authorization by `run-review --input <packet> --output <review> --approved-outbound`. Do not hand-build the subprocess or hand-parse Claude JSON; the shared runner is the single owner of binary resolution, authentication classification, timeout, output bounds, model evidence, and fallback counters.
+The mandatory path is:
 
-## Authorization source and same-turn execution
+```bash
+python3 ~/.codex/skills/orchestrate/scripts/claude_review.py preflight --review-tier <important|security|exceptional>
+python3 ~/.codex/skills/orchestrate/scripts/claude_review.py run-review \
+  --review-tier <important|security|exceptional> \
+  --input "$REVIEW_PACKET" --output "$REVIEW_OUTPUT" --approved-outbound
+```
 
-An explicit user invocation of `$orchestrate` initializes invocation-scoped canonical state `external_review_allowance: unused`; `unused|consumed` are the only valid states. This is standing outbound authorization for one selected bounded, secret-free plan critique or final review.
+Do not hand-build the subprocess or hand-parse Claude JSON. The shared runner owns binary resolution,
+authentication classification, safe flags, timeout, structured output, result bounds, model evidence,
+error classification, and the exceptional Fable fallback.
 
-Run the local Keychain-aware preflight and parse its JSON result. Require `command` to be an array of strings. Render exactly those elements, without adding, removing, or reordering argv, using shell escaping, and print the rendered argv as an informational progress update. The `command` array is the resolved underlying Claude CLI invocation; it is not the shared `run-review` wrapper, must not be executed directly, and printing it is not an approval gate.
+## Authorization And Deduplication
 
-Immediately before invoking `python3 ~/.codex/skills/orchestrate/scripts/claude_review.py run-review --input <packet> --output <review> --approved-outbound` under standing authorization, atomically compare and set the canonical allowance from `unused` to `consumed`. Refuse standing-authorized dispatch unless the compare-and-set succeeds. Then invoke the shared runner with the known packet/output paths in the same turn; do not request a redundant second approval.
+Explicit `$orchestrate` grants the bounded goal policy in [review-policy.md](review-policy.md). Before
+dispatch, require an eligible review tier, remaining goal budget, an `unused` per-PR allowance, and no
+receipt for `<repo identity>|<PR number>|<head SHA>|<policy version>`. Then atomically consume the allowance
+and increment the budget immediately before `run-review`. Invoke it in the same turn; do not ask for a
+redundant approval.
 
-The allowance remains `consumed` after every runner dispatch attempt, including Claude success or failure, timeout, malformed output, missing model metadata, tool/data-policy rejection, and the one eligible direct Opus fallback. Fable plus that fallback is one runner pass and consumes only the already-consumed allowance. A later external plan critique or final review requires separate explicit outbound approval, or a new explicit `$orchestrate` invocation that creates a new `unused` allowance.
+Run preflight first. Its `command` field must be an array of strings. Print those exact elements, in
+order and shell-escaped, as informational underlying Claude argv. It is not the shared `run-review` wrapper,
+must not be executed directly, and is not another approval gate.
 
-If local preflight fails before runner dispatch, no review packet or repository data is sent. Record `EXTERNAL_REVIEW_BLOCKED:preflight`; the failure leaves the allowance `unused`. Use the matching internal reviewer unless external Claude review is an explicit success criterion; in that case request one decision using the same optional-versus-required disposition below.
+A failed preflight sends no packet and leaves the allowance unused. Any dispatch attempt consumes it,
+including provider failure, timeout, malformed output, missing model metadata, data-policy rejection,
+or exceptional fallback. Implicit pipeline routing has no standing outbound authorization. `DRY_RUN`,
+internal-only, and no-external instructions override all standing authorization.
 
-Implicit `pipeline` routing and requests that did not explicitly invoke `$orchestrate` have no standing authorization. Preflight may run because it sends no packet; after printing the preflight `command` argv, request explicit outbound approval before `run-review`.
+## Resolve One Binary
 
-`DRY_RUN` and explicit internal-only or no-external instructions override standing authorization. Standing authorization does not cover extra or comparative paid calls, secrets, customer data, raw transcripts, policy bypass, push, PR creation, merge, deploy, install, migration, destructive action, tenant/live calls, or any other hard gate. Subscription/metered handling, the default `$2` metered cap, the one eligible direct Opus fallback, and zero retries after data-policy rejection remain unchanged.
+Resolve the CLI once and use the same absolute path for `--help`, auth status, preflight, and review.
+Prefer `ORCH_CLAUDE_BIN`, then `~/.local/bin/claude`, `command -v claude`, and known native install
+paths. Require `--safe-mode`, `--permission-mode`, `--tools`, `--no-session-persistence`, `--model`,
+`--fallback-model`, `--effort`, `--output-format`, `--json-schema`, and `--max-budget-usd`.
 
-## Outbound data-policy rejection
+Do not use `--bare` with subscription auth: current Claude CLI bare mode deliberately skips Keychain
+and OAuth. Do not run preflight with one PATH and execute with another.
 
-A local repository plan, diff, log excerpt, or review packet is private by default even when it contains no secrets. Standing or separate user authorization is required but does not override an execution environment or tenant data-export policy.
+## Keychain-Aware Authentication
 
-If the tool layer rejects the command before Claude starts:
+On macOS, a sandboxed `loggedIn=false` is not authoritative because subscription credentials may be
+in macOS Keychain. Run the local-only preflight once with `sandbox_permissions=require_escalated`
+before classifying auth. It sends no review packet and reports no account identifier.
 
-- Treat the runner dispatch as attempted and keep `external_review_allowance: consumed` when standing authorization was used, even if the tool layer sent no packet.
-- Record `EXTERNAL_REVIEW_BLOCKED:data-policy`; this is policy evidence, not a Claude result.
-- Use zero Claude retries. Do not repeat authentication checks, switch Fable/Opus, move or re-encode the packet, invoke another external transport, or otherwise work around the rejection.
-- Do not relabel it as a Claude, authentication, Fable, or Opus failure.
-- Do not poll for a local review output or baton file. A baton is a one-time handoff and resumes only after a new user message confirms completion.
-- When external review was optional, run the corresponding internal `orchestrate_plan_critic` or `orchestrate_reviewer` immediately and label it accurately.
-- When the user made Claude review an explicit success criterion, do not silently substitute another model. Create at most one local baton, pause the run, and request exactly one decision:
+Do not start `claude auth login` after only a sandboxed false negative. Ask the user to authenticate
+only if the same native binary fails in the normal user context. Never read or expose credentials.
+
+Classify `subscription` only when auth JSON has `loggedIn=true`, `authMethod=claude.ai`,
+`apiProvider=firstParty`, a non-empty `subscriptionType`, and no API-key, bearer-token, Bedrock,
+Vertex, or Foundry environment override. Subscription calls omit a USD cap by default but still
+consume plan quota. Metered or provider auth uses a positive cap, default `$2`.
+
+## Review Tiers And Command
+
+- `important`: `--model sonnet`; no direct retry.
+- `security`: `--model opus`; no direct retry.
+- `exceptional`: `--model fable --fallback-model opus`; one direct Opus attempt only when the Fable
+  envelope proves model-specific unavailability before a model starts.
+
+Every tier also uses `--safe-mode`, `--permission-mode plan`, `--tools ""`,
+`--no-session-persistence`, `--effort max`, `--output-format json`, and the runner-owned
+`--json-schema`. The live CLI has no `--max-turns` flag, so do not invent it; no-tools print mode and a
+single stdin packet bound the call.
+
+The schema requires `PASS|CHANGES_REQUIRED`, a summary, and up to 20 findings with severity, file,
+optional line, rationale, and recommendation. Missing or invalid `structured_output` is a failed
+review, not text to salvage.
+
+## Failure Disposition
+
+Use only bounded, content-free classes: `preflight-auth`, `model-specific-quota`, `global-quota`,
+`model-unavailable`, `timeout`, `malformed-output`, `data-policy`, `command-start`, or `model-error`.
+Do not print raw stderr, prompts, output, account data, or logs.
+
+- Zero retry: global quota, timeout/stall, malformed output, data policy, auth failure, and generic
+  provider errors.
+- One retry: only the exceptional Fable-specific fallback above.
+- Optional external lane: immediately use the corresponding internal critic/reviewer and label it.
+- Required external lane: pause once and request a concrete decision. Do not poll a baton or output.
+
+If the execution environment rejects outbound data, keep the consumed allowance, record
+`EXTERNAL_REVIEW_BLOCKED:data-policy`, and use zero Claude retries. Do not switch transports or
+re-encode the packet to bypass policy. Do not relabel it as a Claude authentication or model failure.
+
+Decision options for a required lane:
 
 A. Accept the internal reviewer
 B. Complete one local Claude baton
 C. Pause or abort
 
-The decision request must state that option B is manual, that Codex will not poll it, and that the user must explicitly resume after the output exists.
+## Data Boundary
 
-## Resolve one binary
-
-Resolve the Claude Code CLI once and use the same absolute path for `--version`, `--help`, `auth status`, and the review call. Prefer an explicit `ORCH_CLAUDE_BIN`; otherwise prefer `~/.local/bin/claude`, then inspect `command -v claude` and known native install paths. Reject candidates that do not support `--safe-mode`, `--permission-mode`, `--tools`, `--no-session-persistence`, `--model`, `--fallback-model`, `--effort`, `--output-format`, and `--max-budget-usd`.
-
-Do not run preflight with one PATH and execute with another. A shell alias, wrapper, or older Homebrew binary may expose a different flag surface.
-
-## Keychain-aware execution context
-
-On macOS, Claude Code subscription credentials may be stored in macOS Keychain. A sandboxed
-`loggedIn=false` result is not authoritative because the same native binary can be authenticated in
-the normal user execution context while Keychain access is denied inside the sandbox.
-
-Run the local-only preflight through the trusted canonical runner with `sandbox_permissions` set to
-`require_escalated`. Preflight sends no review packet and invokes only CLI help plus sanitized auth
-status. If an earlier sandboxed preflight reported unauthenticated, rerun this exact preflight once
-outside the sandbox before classifying auth or asking the user to intervene. Use the same resolved
-absolute binary for `run-review` after outbound approval.
-
-Do not start `claude auth login` from a sandboxed false negative. Only after the Keychain-aware
-preflight also reports unauthenticated may the user be asked to complete the interactive login; Codex
-must never enter, read, or expose credentials.
-
-## Confirm authentication
-
-Run `<absolute-claude> auth status --json` locally and parse it as JSON. Report only `loggedIn`, `authMethod`, `apiProvider`, and `subscriptionType`; never print account identifiers or credentials.
-
-Classify as `subscription` only when all are true:
-
-- `loggedIn` is `true`;
-- `authMethod` is `claude.ai`;
-- `apiProvider` is `firstParty`;
-- `subscriptionType` is non-empty;
-- no API-key, bearer-token, Bedrock, Vertex, or Foundry environment setting can take precedence.
-
-For verified subscription auth, omit `--max-budget-usd` by default. An explicit `ORCH_CLAUDE_MAX_BUDGET_USD` may still cap estimated usage. For API, cloud-provider, or unknown authenticated modes, include a positive cap, default `$2`. Block when authentication cannot be verified.
-
-Subscription use is not unbounded: `claude -p` consumes the plan's monthly Agent SDK allowance. Keep the one-review, one-fallback, no-tool, and timeout limits even when no USD cap is present.
-
-## Review command
-
-Send the approved packet through stdin:
-
-```bash
-"$CLAUDE_BIN" -p \
-  --safe-mode \
-  --model fable \
-  --fallback-model opus \
-  --permission-mode plan \
-  --tools "" \
-  --no-session-persistence \
-  --effort max \
-  --output-format json \
-  < "$REVIEW_PACKET"
-```
-
-For metered auth, add `--max-budget-usd 2`. Print the preflight JSON `command` array exactly as shell-escaped argv; do not label it a `run-review` command. After the required atomic allowance transition, invoke the shared runner immediately when explicit `$orchestrate` standing authorization applies; otherwise obtain explicit outbound approval before runner dispatch.
-
-## Result and fallback
-
-Parse the JSON envelope even when the CLI exits nonzero. A model statement is not model evidence: inspect `modelUsage` before naming a resolved version. Treat `total_cost_usd` as estimated model cost, not proof of a billed charge.
-
-`--fallback-model opus` covers overload behavior, not every subscription quota failure. The shared runner retries directly with `--model opus` exactly once only when Fable returns structured 404/429 unavailability or the exact Fable-specific subscription-limit envelope before any model starts. Generic usage, quota, billing, or entitlement prose is not retryable. The second call omits `--fallback-model` and is accepted only when `modelUsage` verifies the Opus family. It remains inside the already-consumed review pass and requires no new allowance. Any timeout, second failure, malformed envelope, missing model metadata, auth change, or other error stops the external lane, leaves the allowance consumed, and returns to the internal critic/reviewer.
-
-Classify outbound content as public, anonymized, or private before approval. Prefer an architecture-only anonymized packet. Never send secrets, customer data, raw transcripts, full logs, hidden reasoning, or repository content outside the approved review working set.
+Classify the packet as public, anonymized, or private. Send only the smallest approved diff and
+context. Never send secrets, customer data, raw transcripts, full logs, hidden reasoning, unrelated
+repository content, or machine/account identifiers. Standing review authorization never grants push,
+PR creation, merge, deploy, install, migration, destructive action, or tenant/live access.

@@ -9,7 +9,10 @@
 # Env:
 #   ORCH_SANDBOX      Codex sandbox for implementation (default workspace-write)
 #   ORCH_EXEC_MODEL   implement model when no override is active (default gpt-5.6-terra)
-#   ORCH_EXEC_EFFORT  low|medium|high|xhigh|ultra (default ultra)
+#   ORCH_EXEC_EFFORT  low|medium|high|xhigh|ultra (default medium)
+#   ORCH_PROFILE      DIRECT|FAST|STANDARD|DEEP (default STANDARD)
+#   ORCH_TOKEN_POLICY observe|enforce (default observe)
+#   ORCH_TOKEN_NEXT_SPAWN_LIMIT optional observed-token threshold for another model call
 #   ORCH_WORKTREE=1   create a dedicated worktree off origin/<default-branch>
 #   ORCH_STALL_KILL   seconds without Codex output before retry (default 300)
 #   ORCH_MAX_RETRY    retry count after a hung step (default 2)
@@ -46,7 +49,7 @@ PLAN="${2:-PLAN-${TOPIC}.md}"
 BRANCH="orch/${TOPIC}"
 SANDBOX="${ORCH_SANDBOX:-workspace-write}"
 EXEC_MODEL="${ORCH_EXEC_MODEL:-gpt-5.6-terra}"
-EXEC_EFFORT="${ORCH_EXEC_EFFORT:-ultra}"
+EXEC_EFFORT="${ORCH_EXEC_EFFORT:-medium}"
 EFFORT_SOURCE="default"
 [[ -n "${ORCH_EXEC_EFFORT+x}" ]] && EFFORT_SOURCE="env"
 WORKTREE="${ORCH_WORKTREE:-0}"
@@ -54,6 +57,51 @@ DRY="${ORCH_DRYRUN:-0}"
 RESTART="${ORCH_RESTART:-0}"
 DEDICATED_WORKTREE="${ORCH_DEDICATED_WORKTREE:-$WORKTREE}"
 VERIFY_TIMEOUT="${ORCH_VERIFY_TIMEOUT:-900}"
+CALLER_ORCH_PROFILE="${ORCH_PROFILE-}"
+CALLER_TOKEN_POLICY="${ORCH_TOKEN_POLICY-}"
+CALLER_TOKEN_NEXT_SPAWN_LIMIT="${ORCH_TOKEN_NEXT_SPAWN_LIMIT-}"
+ORCH_PROFILE="${ORCH_PROFILE:-STANDARD}"
+TOKEN_POLICY="${ORCH_TOKEN_POLICY:-observe}"
+TOKEN_NEXT_SPAWN_LIMIT="${ORCH_TOKEN_NEXT_SPAWN_LIMIT:-}"
+
+is_int64_nonnegative() {
+  local value="$1"
+  [[ "$value" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  (( ${#value} < 19 )) || [[ ${#value} -eq 19 && "$value" < "9223372036854775808" ]]
+}
+
+canonical_decimal() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  while [[ ${#value} -gt 1 && "$value" == 0* ]]; do value="${value#0}"; done
+  is_int64_nonnegative "$value" || return 1
+  printf '%s\n' "$value"
+}
+
+can_add_int64() { # <current> <increment>
+  local current="$1" increment="$2"
+  is_int64_nonnegative "$current" && is_int64_nonnegative "$increment" || return 1
+  (( 10#$current <= 9223372036854775807 - 10#$increment ))
+}
+
+configure_token_policy() {
+  case "$ORCH_PROFILE" in
+    DIRECT) DEFAULT_TOKEN_NEXT_SPAWN_LIMIT=100000 ;;
+    FAST) DEFAULT_TOKEN_NEXT_SPAWN_LIMIT=250000 ;;
+    STANDARD) DEFAULT_TOKEN_NEXT_SPAWN_LIMIT=600000 ;;
+    DEEP) DEFAULT_TOKEN_NEXT_SPAWN_LIMIT=1200000 ;;
+    *) die "ORCH_PROFILE must be one of: DIRECT, FAST, STANDARD, DEEP" ;;
+  esac
+  TOKEN_NEXT_SPAWN_LIMIT="${TOKEN_NEXT_SPAWN_LIMIT:-$DEFAULT_TOKEN_NEXT_SPAWN_LIMIT}"
+  case "$TOKEN_POLICY" in observe|enforce) ;; *)
+    die "ORCH_TOKEN_POLICY must be one of: observe, enforce" ;;
+  esac
+  TOKEN_NEXT_SPAWN_LIMIT="$(canonical_decimal "$TOKEN_NEXT_SPAWN_LIMIT" 2>/dev/null || true)"
+  is_int64_nonnegative "$TOKEN_NEXT_SPAWN_LIMIT" && [[ "$TOKEN_NEXT_SPAWN_LIMIT" != "0" ]] || \
+    die "ORCH_TOKEN_NEXT_SPAWN_LIMIT must be a positive signed 64-bit integer"
+}
+
+[[ "$RESUME" == "1" ]] || configure_token_policy
 
 case "$EXEC_EFFORT" in low|medium|high|xhigh|ultra) ;; *)
   die "ORCH_EXEC_EFFORT must be one of: low, medium, high, xhigh, ultra" ;;
@@ -177,7 +225,7 @@ print_step_command() { # <role> <sandbox> <effort>
   local role="$1" sandbox="$2" effort="$3"
   resolve_override "$role" "$effort"
   if [[ "$OVERRIDE_PROVIDER" == "claude" ]]; then
-    printf '+ claude -p --safe-mode --model %q --permission-mode plan --tools %q --no-session-persistence --effort max --output-format json' "$OVERRIDE_MODEL" ""
+    printf '+ claude -p --safe-mode --model %q --permission-mode plan --tools %q --no-session-persistence --effort max --output-format json --json-schema <review-schema>' "$OVERRIDE_MODEL" ""
     [[ "$OVERRIDE_MODEL" == "fable" ]] && printf ' --fallback-model opus'
     printf '  # budget depends on authenticated billing mode\n'
   else
@@ -188,7 +236,7 @@ print_step_command() { # <role> <sandbox> <effort>
       printf ' -m %q' "$EXEC_MODEL"
     fi
     [[ -n "$OVERRIDE_EFFORT" ]] && printf ' -c model_reasoning_effort=%q' "$OVERRIDE_EFFORT"
-    printf ' -o <output> - < <prompt>\n'
+    printf ' --json -o <output> - < <prompt>\n'
   fi
 }
 
@@ -196,6 +244,7 @@ if [[ "$DRY" == "1" ]]; then
   BASE="$(local_base)"
   echo "== orchestrate dry-run: $TOPIC =="
   echo "   plan=$PLAN_ABS  branch=$BRANCH  base=$BASE  sandbox=$SANDBOX  effort=$EXEC_EFFORT  worktree=$WORKTREE"
+  echo "   profile=$ORCH_PROFILE  token-policy=$TOKEN_POLICY  next-spawn-threshold=$TOKEN_NEXT_SPAWN_LIMIT measured tokens"
   [[ "$WORKTREE" == "1" ]] && echo "+ git worktree add -b '$BRANCH' <temp-worktree> 'origin/$BASE'"
   print_step_command critique read-only ""
   [[ "$WORKTREE" == "1" ]] || echo "+ git switch -c '$BRANCH'  # or reuse the existing task branch"
@@ -276,7 +325,33 @@ if [[ "$RESUME" == "1" ]]; then
   [[ -f "$RUN_FILE" ]] || die "no run record found for '$RUN_ID'"
   [[ "$existing_checkpoint" == "awaiting_approval" || "$existing_checkpoint" == "approval_granted" ]] || \
     die "run '$RUN_ID' has no resumable push/PR checkpoint"
+  persisted_token_env=()
+  while IFS= read -r persisted; do
+    persisted_token_env+=("$persisted")
+  done < <("$VERIFY_PYTHON" - "$RUN_FILE" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    env = ((json.load(fh).get("restart") or {}).get("env") or {})
+for key in ("ORCH_PROFILE", "ORCH_TOKEN_POLICY", "ORCH_TOKEN_NEXT_SPAWN_LIMIT"):
+    print(str(env.get(key, "")))
+PY
+  )
+  for index in 0 1 2; do
+    persisted="${persisted_token_env[$index]:-}"
+    caller=("$CALLER_ORCH_PROFILE" "$CALLER_TOKEN_POLICY" "$CALLER_TOKEN_NEXT_SPAWN_LIMIT")
+    names=("ORCH_PROFILE" "ORCH_TOKEN_POLICY" "ORCH_TOKEN_NEXT_SPAWN_LIMIT")
+    [[ -z "$persisted" ]] && continue
+    [[ -z "${caller[$index]}" || "${caller[$index]}" == "$persisted" ]] || \
+      die "resume ${names[$index]} conflicts with persisted value '$persisted'"
+    case "$index" in
+      0) ORCH_PROFILE="$persisted" ;;
+      1) TOKEN_POLICY="$persisted" ;;
+      2) TOKEN_NEXT_SPAWN_LIMIT="$persisted" ;;
+    esac
+  done
 fi
+
+[[ "$RESUME" == "1" ]] && configure_token_policy
 
 MADE_BRANCH=0
 if [[ "$RESUME" == "1" ]]; then
@@ -357,6 +432,9 @@ START_ARGS=(start --id "$RUN_ID" --repo "$REPO_NAME" --topic "$TOPIC"
 [[ "$DEDICATED_WORKTREE" == "1" ]] && START_ARGS+=(--worktree)
 START_ARGS+=(--env "ORCH_SANDBOX=$SANDBOX"
   --env "ORCH_EXEC_EFFORT=$EXEC_EFFORT"
+  --env "ORCH_PROFILE=$ORCH_PROFILE"
+  --env "ORCH_TOKEN_POLICY=$TOKEN_POLICY"
+  --env "ORCH_TOKEN_NEXT_SPAWN_LIMIT=$TOKEN_NEXT_SPAWN_LIMIT"
   --env "ORCH_STALL_KILL=${ORCH_STALL_KILL:-300}"
   --env "ORCH_MAX_RETRY=${ORCH_MAX_RETRY:-2}"
   --env "ORCH_VERIFY_TIMEOUT=$VERIFY_TIMEOUT"
@@ -370,6 +448,9 @@ if [[ "$RESUME" == "1" ]]; then
 else
   emit "${START_ARGS[@]}"
 fi
+emit metric --id "$RUN_ID" --key "tokens.profile" --value "$ORCH_PROFILE"
+emit metric --id "$RUN_ID" --key "tokens.policy" --value "$TOKEN_POLICY"
+emit metric --id "$RUN_ID" --key "tokens.nextSpawnLimit" --value "$TOKEN_NEXT_SPAWN_LIMIT"
 
 FAIL_TRAP_ARMED=1
 CURRENT_STEP=1
@@ -388,30 +469,170 @@ trap on_exit EXIT
 LAST_SESSION_ID=""
 capture_session() {
   local log="$1" session
-  session="$(sed -nE 's/.*session id:[[:space:]]*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}).*/\1/p' "$log" | head -1)"  # header id; test output later in the log may contain fixture UUIDs
+  session="$("$VERIFY_PYTHON" - "$log" <<'PY' 2>/dev/null || true
+import json, sys
+found = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try: event = json.loads(line)
+    except json.JSONDecodeError: continue
+    if not isinstance(event, dict) or event.get("type") != "thread.started": continue
+    value = event.get("thread_id", event.get("threadId"))
+    if isinstance(value, str) and value and value.isprintable(): found.append(value)
+if len(found) == 1: print(found[0])
+PY
+  )"
   LAST_SESSION_ID="$session"
   [[ -n "$session" ]] && emit metric --id "$RUN_ID" --key session --value "$session"
 }
 
-# Cumulative per-run token count across steps; Codex prints "tokens used" then the
-# running total on the next line. Best-effort only: every pipeline is guarded so a
-# missing pattern or malformed number can never fail the run (set -Eeuo pipefail).
+# Cumulative observed token count across model calls. Coverage is model calls with
+# parseable token metadata divided by model calls started; dashboard steps are not
+# used as the denominator because one step may contain retries or repair calls.
 TOKENS_TOTAL=0
+TOKENS_CRITIQUE=0
+TOKENS_IMPLEMENT=0
+TOKENS_REPAIR=0
+TOKENS_CLAUDE=0
+TOKENS_CALLS_STARTED=0
+TOKENS_CALLS_OBSERVED=0
+TOKEN_COVERAGE_KNOWN=1
+STEP_TOKENS=(0 0 0 0 0 0 0 0)
+
+restore_token_state() {
+  [[ "$RESUME" == "1" && -f "$RUN_FILE" ]] || return 0
+  local field count=0 restored=()
+  while IFS= read -r field; do
+    restored+=("$field")
+    count=$((count + 1))
+  done < <("$VERIFY_PYTHON" - "$RUN_FILE" <<'PY'
+import json, re, sys
+MAX = 9223372036854775807
+try:
+    with open(sys.argv[1]) as fh:
+        run = json.load(fh)
+except (OSError, json.JSONDecodeError):
+    sys.exit(1)
+state = (run.get("metrics") or {}).get("tokens.state.v1")
+if isinstance(state, str):
+    try: state = json.loads(state)
+    except json.JSONDecodeError: state = None
+def dec(value): return isinstance(value, str) and re.fullmatch(r"0|[1-9][0-9]*", value) and int(value) <= MAX
+try:
+    assert isinstance(state, dict) and type(state.get("v")) is int and state["v"] == 1
+    assert type(state.get("coverageKnown")) is bool
+    roles, steps = state["roles"], state["steps"]
+    assert isinstance(roles, dict) and isinstance(steps, list) and len(steps) == 7
+    values = [state["total"], roles["critique"], roles["implement"], roles["repair"], roles["claude"], state["callsObserved"], state["callsStarted"], *steps]
+    assert all(dec(v) for v in values)
+    ints = list(map(int, values)); assert ints[5] <= ints[6] and ints[0] == sum(ints[1:5]) == sum(ints[7:])
+except (AssertionError, KeyError, TypeError): sys.exit(1)
+print("\n".join(values + [str(state["coverageKnown"]).lower()]))
+PY
+  )
+  if (( count != 15 )); then TOKEN_COVERAGE_KNOWN=0; TOKEN_POLICY=observe; return 0; fi
+  TOKENS_TOTAL="${restored[0]}"; TOKENS_CRITIQUE="${restored[1]}"; TOKENS_IMPLEMENT="${restored[2]}"; TOKENS_REPAIR="${restored[3]}"; TOKENS_CLAUDE="${restored[4]}"; TOKENS_CALLS_OBSERVED="${restored[5]}"; TOKENS_CALLS_STARTED="${restored[6]}"
+  for index in {1..7}; do STEP_TOKENS[$index]="${restored[$((index + 6))]}"; done
+  [[ "${restored[14]}" == "true" ]] || { TOKEN_COVERAGE_KNOWN=0; TOKEN_POLICY=observe; }
+}
+
+emit_token_coverage() {
+  if [[ "$TOKEN_COVERAGE_KNOWN" != "1" ]]; then
+    emit metric --id "$RUN_ID" --key "tokens.coverage.calls.v1" --value unknown
+    return 0
+  fi
+  emit metric --id "$RUN_ID" --key "tokens.coverage.calls.v1" \
+    --value "$TOKENS_CALLS_OBSERVED/$TOKENS_CALLS_STARTED"
+}
+
+emit_token_state() {
+  local snapshot
+  snapshot="$(printf '{"v":1,"coverageKnown":%s,"total":"%s","roles":{"critique":"%s","implement":"%s","repair":"%s","claude":"%s"},"steps":["%s","%s","%s","%s","%s","%s","%s"],"callsStarted":"%s","callsObserved":"%s"}' "$([[ "$TOKEN_COVERAGE_KNOWN" == "1" ]] && printf true || printf false)" "$TOKENS_TOTAL" "$TOKENS_CRITIQUE" "$TOKENS_IMPLEMENT" "$TOKENS_REPAIR" "$TOKENS_CLAUDE" "${STEP_TOKENS[1]}" "${STEP_TOKENS[2]}" "${STEP_TOKENS[3]}" "${STEP_TOKENS[4]}" "${STEP_TOKENS[5]}" "${STEP_TOKENS[6]}" "${STEP_TOKENS[7]}" "$TOKENS_CALLS_STARTED" "$TOKENS_CALLS_OBSERVED")"
+  emit metric --id "$RUN_ID" --key "tokens.state.v1" --value "$snapshot"
+}
+
+restore_token_state
+emit_token_coverage
+emit metric --id "$RUN_ID" --key "tokens.policy" --value "$TOKEN_POLICY"
+
+before_model_call() { # <role>
+  local role="$1"
+  if (( TOKENS_TOTAL >= TOKEN_NEXT_SPAWN_LIMIT )); then
+    emit metric --id "$RUN_ID" --key "tokens.nextSpawn" \
+      --value "$TOKEN_POLICY:$ORCH_PROFILE:$TOKENS_TOTAL/$TOKEN_NEXT_SPAWN_LIMIT:$role"
+    if [[ "$TOKEN_POLICY" == "enforce" ]]; then
+      echo "orchestrate: next model call '$role' blocked at ${TOKENS_TOTAL}/${TOKEN_NEXT_SPAWN_LIMIT} measured tokens" >&2
+      return 42
+    fi
+    echo "orchestrate: token observation threshold reached (${TOKENS_TOTAL}/${TOKEN_NEXT_SPAWN_LIMIT}); continuing '$role' in observe mode" >&2
+  fi
+  if can_add_int64 "$TOKENS_CALLS_STARTED" 1; then
+    TOKENS_CALLS_STARTED=$((TOKENS_CALLS_STARTED + 1))
+  else
+    TOKEN_COVERAGE_KNOWN=0
+  fi
+  emit_token_coverage
+  emit_token_state
+}
+
+record_token_value() { # <tokens> <role> [step_n]
+  local tokens="$1" role="$2" step_n="${3:-}" role_total role_counter=""
+  TOKEN_VALUE_RECORDED=0
+  is_int64_nonnegative "$tokens" || return 0
+  case "$role" in
+    critique) role_counter="$TOKENS_CRITIQUE" ;;
+    implement) role_counter="$TOKENS_IMPLEMENT" ;;
+    repair) role_counter="$TOKENS_REPAIR" ;;
+    claude*) role_counter="$TOKENS_CLAUDE" ;;
+  esac
+  # Check every token aggregate before mutating any of them. A bad telemetry value
+  # must not wrap or leave a partial total behind.
+  can_add_int64 "$TOKENS_TOTAL" "$tokens" || return 0
+  [[ -z "$role_counter" ]] || can_add_int64 "$role_counter" "$tokens" || return 0
+  if [[ -n "$step_n" && "$step_n" =~ ^[1-7]$ ]]; then
+    can_add_int64 "${STEP_TOKENS[$step_n]}" "$tokens" || return 0
+  fi
+  TOKENS_TOTAL=$((TOKENS_TOTAL + 10#$tokens))
+  case "$role" in
+    critique) TOKENS_CRITIQUE=$((TOKENS_CRITIQUE + 10#$tokens)); role_total=$TOKENS_CRITIQUE ;;
+    implement) TOKENS_IMPLEMENT=$((TOKENS_IMPLEMENT + 10#$tokens)); role_total=$TOKENS_IMPLEMENT ;;
+    repair) TOKENS_REPAIR=$((TOKENS_REPAIR + 10#$tokens)); role_total=$TOKENS_REPAIR ;;
+    claude*) TOKENS_CLAUDE=$((TOKENS_CLAUDE + 10#$tokens)); role_total=$TOKENS_CLAUDE ;;
+    *) role_total=$tokens ;;
+  esac
+  emit metric --id "$RUN_ID" --key "tokens.$role" --value "$role_total"
+  emit metric --id "$RUN_ID" --key "tokens.total" --value "$TOKENS_TOTAL"
+  if can_add_int64 "$TOKENS_CALLS_OBSERVED" 1; then
+    TOKENS_CALLS_OBSERVED=$((TOKENS_CALLS_OBSERVED + 1))
+  else
+    TOKEN_COVERAGE_KNOWN=0
+  fi
+  emit_token_coverage
+  if [[ -n "$step_n" && "$step_n" =~ ^[1-7]$ ]]; then
+    STEP_TOKENS[$step_n]=$((STEP_TOKENS[$step_n] + 10#$tokens))
+    emit step --id "$RUN_ID" --n "$step_n" --tokens "${STEP_TOKENS[$step_n]}"
+  fi
+  emit_token_state
+  TOKEN_VALUE_RECORDED=1
+}
+
 capture_tokens() { # <log> <role> [step_n]
   local log="$1" role="$2" step_n="${3:-}" tokens=""
   [[ -n "$role" && -f "$log" ]] || return 0
-  tokens="$(awk '
-    /tokens used[: ]*[0-9]/ { s=$0; sub(/.*tokens used[: ]*/, "", s); gsub(/[,[:space:]]/, "", s); if (s ~ /^[0-9]+$/) last=s }
-    prev ~ /tokens used/ { s=$0; gsub(/[,[:space:]]/, "", s); if (s ~ /^[0-9]+$/) last=s }
-    { prev=$0 }
-    END { if (last != "") print last }
-  ' "$log" 2>/dev/null || true)"
-  [[ "$tokens" =~ ^[0-9]+$ ]] || return 0
-  TOKENS_TOTAL=$((TOKENS_TOTAL + 10#$tokens))
-  emit metric --id "$RUN_ID" --key "tokens.$role" --value "$tokens"
-  emit metric --id "$RUN_ID" --key "tokens.total" --value "$TOKENS_TOTAL"
-  # Per-step token count (shown next to the step on the dashboard). No --state: metadata-only.
-  [[ -n "$step_n" ]] && emit step --id "$RUN_ID" --n "$step_n" --tokens "$tokens"
+  tokens="$("$VERIFY_PYTHON" - "$log" <<'PY' 2>/dev/null || true
+import json, sys
+MAX=9223372036854775807; completed=[]
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try: event=json.loads(line)
+    except json.JSONDecodeError: continue
+    if not isinstance(event, dict) or event.get("type") != "turn.completed": continue
+    completed.append(event)
+if len(completed)==1:
+    usage=completed[0].get("usage"); inp=usage.get("input_tokens") if isinstance(usage,dict) else None; out=usage.get("output_tokens") if isinstance(usage,dict) else None
+    if isinstance(inp,int) and not isinstance(inp,bool) and isinstance(out,int) and not isinstance(out,bool) and 0 <= inp <= MAX and 0 <= out <= MAX and inp <= MAX-out: print(inp+out)
+PY
+  )"
+  is_int64_nonnegative "$tokens" || return 0
+  record_token_value "$tokens" "$role" "$step_n"
   return 0
 }
 
@@ -437,7 +658,7 @@ resolve_claude_bin() {
     help="$("$resolved" --help 2>/dev/null || true)"
     [[ -n "$help" ]] || continue
     supported=1
-    for flag in --safe-mode --permission-mode --tools --no-session-persistence --model --fallback-model --effort --output-format --max-budget-usd; do
+    for flag in --safe-mode --permission-mode --tools --no-session-persistence --model --fallback-model --effort --output-format --json-schema --max-budget-usd; do
       if [[ "$help" != *"$flag"* ]]; then
         supported=0
         break
@@ -474,14 +695,15 @@ effective_claude_auth_mode() {
   printf '%s\n' "$mode"
 }
 
-run_claude_once() { # <prompt> <output> <model> <cli-fallback:0|1> <auth-mode> <step> <direct-fallback:0|1>
+run_claude_once() { # <prompt> <output> <model> <cli-fallback:0|1> <auth-mode> <step> <direct-fallback:0|1> <role>
   local prompt_file="$1" out_file="$2" model="$3" cli_fallback="$4" auth_mode="$5" step_n="$6" direct_fallback="$7"
-  local helper result_json log cpid worker_start worker_pgid size last_size=-1 idle=0
+  local role="$8" helper result_json log cpid worker_start worker_pgid size last_size=-1 idle=0 usage_tokens="" schema
   local kill_after="${ORCH_STALL_KILL:-300}" hung=0 rc=0 parse_rc=0 metadata="" budget="${ORCH_CLAUDE_MAX_BUDGET_USD:-}"
   local -a cmd parse
   helper="$(dirname "$SELF")/claude_review.py"
+  schema="$("$VERIFY_PYTHON" "$helper" schema)" || die "cannot load Claude review schema"
   cmd=("$CLAUDE_BIN" -p --safe-mode --model "$model" --permission-mode plan --tools ""
-    --no-session-persistence --effort max --output-format json)
+    --no-session-persistence --effort max --output-format json --json-schema "$schema")
   [[ "$cli_fallback" == "1" ]] && cmd+=(--fallback-model opus)
   [[ "$auth_mode" == "subscription" ]] || budget="${budget:-2}"
   if [[ -n "$budget" ]]; then
@@ -492,6 +714,7 @@ run_claude_once() { # <prompt> <output> <model> <cli-fallback:0|1> <auth-mode> <
   result_json="$(mktemp -t orch-claude-result-XXXX).json"
   log="$(mktemp -t orch-claude-log-XXXX).log"
   [[ -n "$step_n" ]] && emit metric --id "$RUN_ID" --key log --value "$log"
+  before_model_call "$role" || return $?
   "${cmd[@]}" < "$prompt_file" >"$result_json" 2>"$log" &
   cpid=$!
   worker_start="$(proc_start "$cpid" || true)"
@@ -521,7 +744,9 @@ run_claude_once() { # <prompt> <output> <model> <cli-fallback:0|1> <auth-mode> <
     return 124
   fi
   if wait "$cpid"; then rc=0; else rc=$?; fi
-  parse=("$VERIFY_PYTHON" "$helper" extract-result --input "$result_json" --output "$out_file" --require-model-metadata)
+  usage_tokens="$("$VERIFY_PYTHON" "$helper" extract-usage --input "$result_json" 2>/dev/null || true)"
+  [[ -z "$usage_tokens" ]] || record_token_value "$usage_tokens" "$role" "$step_n"
+  parse=("$VERIFY_PYTHON" "$helper" extract-result --input "$result_json" --output "$out_file" --require-model-metadata --require-structured)
   [[ "$cli_fallback" == "1" ]] && parse+=(--retry-on-unavailable)
   [[ "$direct_fallback" == "1" ]] && parse+=(--require-model opus)
   if metadata="$("${parse[@]}" 2>>"$log")"; then
@@ -539,13 +764,13 @@ run_claude_once() { # <prompt> <output> <model> <cli-fallback:0|1> <auth-mode> <
   return 1
 }
 
-run_claude_review() { # <prompt> <output> <model> <step>
-  local prompt_file="$1" out_file="$2" model="$3" step_n="$4" auth_mode fallback_auth rc cli_fallback=0
+run_claude_review() { # <prompt> <output> <model> <step> <role>
+  local prompt_file="$1" out_file="$2" model="$3" step_n="$4" role="$5" auth_mode fallback_auth rc cli_fallback=0
   resolve_claude_bin
   auth_mode="$(effective_claude_auth_mode)" || die "Claude authentication preflight failed"
   emit metric --id "$RUN_ID" --key claude.auth --value "$auth_mode"
   [[ "$model" == "fable" ]] && cli_fallback=1
-  if run_claude_once "$prompt_file" "$out_file" "$model" "$cli_fallback" "$auth_mode" "$step_n" 0; then
+  if run_claude_once "$prompt_file" "$out_file" "$model" "$cli_fallback" "$auth_mode" "$step_n" 0 "$role"; then
     return 0
   else
     rc=$?
@@ -554,7 +779,7 @@ run_claude_review() { # <prompt> <output> <model> <step>
     fallback_auth="$(effective_claude_auth_mode)" || die "Claude fallback authentication preflight failed"
     [[ "$fallback_auth" == "$auth_mode" ]] || die "Claude authentication mode changed before fallback"
     emit metric --id "$RUN_ID" --key claude.fallback --value "fable-unavailable:direct-opus"
-    run_claude_once "$prompt_file" "$out_file" opus 0 "$auth_mode" "$step_n" 1
+    run_claude_once "$prompt_file" "$out_file" opus 0 "$auth_mode" "$step_n" 1 "$role"
     return
   fi
   return "$rc"
@@ -577,10 +802,10 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
   local -a cmd=()
   if [[ "$OVERRIDE_PROVIDER" == "claude" ]]; then
     [[ "$role" == "critique" && -n "$OVERRIDE_MODEL" ]] || die "invalid Claude override for $role"
-    run_claude_review "$prompt_file" "$out_file" "$OVERRIDE_MODEL" "$step_n"
+    run_claude_review "$prompt_file" "$out_file" "$OVERRIDE_MODEL" "$step_n" "$role"
     return
   fi
-  cmd=(codex exec -s "$sandbox" -c approval_policy=never)
+  cmd=(codex exec --json -s "$sandbox" -c approval_policy=never)
   if [[ -n "$OVERRIDE_MODEL" ]]; then
     cmd+=(-m "$OVERRIDE_MODEL")
   elif [[ "$OVERRIDE_SOURCE" != "override" && "$role" == "implement" ]]; then
@@ -600,6 +825,7 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
     fi
     [[ -n "$step_n" ]] && emit metric --id "$RUN_ID" --key log --value "$log"
     [[ -n "$step_n" ]] && emit step --id "$RUN_ID" --n "$step_n" --log "$log"
+    before_model_call "$role" || return $?
     "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
     cpid=$!
     worker_start="$(proc_start "$cpid" || true)"
@@ -632,10 +858,8 @@ codex_run() { # <prompt-file> <out-file> <sandbox> <effort|""> <step-n> <role>
     if [[ "$hung" == "0" ]]; then
       if wait "$cpid"; then rc=0; else rc=$?; fi
       capture_session "$log"
-      if [[ "$rc" -eq 0 ]]; then
-        capture_tokens "$log" "$role" "$step_n"
-        return 0
-      fi
+      capture_tokens "$log" "$role" "$step_n"
+      if [[ "$rc" -eq 0 ]]; then return 0; fi
       echo "  Codex failed (log: $log)" >&2
       return "$rc"
     fi
@@ -654,9 +878,10 @@ codex_resume_fix() { # <session-id> <prompt-file> <out-file>
   local session="$1" prompt_file="$2" out_file="$3"
   local kill_after="${ORCH_STALL_KILL:-300}" log cpid last_size=-1 idle=0 size rc=0
   local worker_start worker_pgid
-  local -a cmd=(codex exec resume -c approval_policy=never
+  local -a cmd=(codex exec resume --json -c approval_policy=never
     -c "model_reasoning_effort=$EXEC_EFFORT" -o "$out_file" "$session" -)
   log="$(mktemp -t orch-resume-XXXX).log"
+  before_model_call repair || return $?
   "${cmd[@]}" < "$prompt_file" >"$log" 2>&1 &
   cpid=$!
   worker_start="$(proc_start "$cpid" || true)"
@@ -682,6 +907,7 @@ codex_resume_fix() { # <session-id> <prompt-file> <out-file>
   done
   if wait "$cpid"; then rc=0; else rc=$?; fi
   capture_session "$log"
+  capture_tokens "$log" repair 3
   if [[ "$rc" -ne 0 ]]; then
     echo "  Codex repair failed (log: $log)" >&2
   fi

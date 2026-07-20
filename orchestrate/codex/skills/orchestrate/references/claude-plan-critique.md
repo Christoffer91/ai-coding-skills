@@ -1,12 +1,20 @@
 # Claude Plan Critique Gate
 
-Use this only for a bounded, secret-free `FULL_SPEC` after outbound authorization is established. An explicit user invocation of `$orchestrate` supplies invocation-scoped `external_review_allowance: unused` for the workflow's single selected external review pass; implicit routing or a request without explicit `$orchestrate` still requires separate explicit approval. Internal `orchestrate_plan_critic` remains the default and the fallback when authorization, authentication, entitlement, or model verification is absent.
+Use this only for a bounded, secret-free `FULL_SPEC` when the user explicitly requests an external
+plan critique. The internal `orchestrate_plan_critic` remains default. This lane consumes one eligible
+pass from [review-policy.md](review-policy.md); implicit routing still requires separate approval.
 
 ## Safe command
 
-Follow [claude-cli-preflight.md](claude-cli-preflight.md) through the shared runner, including absolute binary resolution, authentication classification, outbound-data review, and the one-attempt direct Opus fallback. After `preflight`, print exactly its JSON `command` array as shell-escaped informational argv; it is the underlying Claude command, not the `run-review` wrapper or an approval gate. When standing authorization came from explicit `$orchestrate`, atomically change the allowance from `unused` to `consumed` immediately before invoking the shared runner with the known packet/output paths and `--approved-outbound` in the same turn. Refuse standing-authorized dispatch when the allowance is not `unused`; do not ask for a redundant second approval after the transition. For implicit routing, wait for separate explicit outbound approval before invoking it. Never hand-build or hand-parse the Claude call.
+Follow [claude-cli-preflight.md](claude-cli-preflight.md) through the shared runner with
+`--review-tier exceptional`. Print its exact informational argv, verify the goal budget and
+idempotency key, then atomically consume the per-target allowance before dispatch with
+`--approved-outbound`. For implicit routing, wait for explicit outbound approval. Never hand-build or
+hand-parse the call.
 
-Any runner dispatch consumes the allowance regardless of success, failure, timeout, malformed or missing metadata, tool/data-policy rejection, or eligible Opus fallback. A failed preflight sends no packet and leaves it `unused`. After a standing-authorized plan critique dispatch, final external review requires separate explicit outbound approval or a new explicit `$orchestrate` invocation.
+Any runner dispatch consumes the allowance regardless of outcome. A failed preflight sends no packet
+and leaves it unused. The final review is internal unless a separate eligible external pass remains in
+the goal budget and the review policy selects it.
 
 Do not enter this lane for `DRY_RUN` or an explicit internal-only/no-external request. Standing authorization covers only this selected review pass and does not approve another paid comparison, repository external action, or any other hard gate.
 
@@ -19,7 +27,8 @@ Do not enter this lane for `DRY_RUN` or an explicit internal-only/no-external re
   --model fable \
   --fallback-model opus \
   --effort max \
-  --output-format json
+  --output-format json \
+  --json-schema "$REVIEW_SCHEMA"
 ```
 
 Omit `--max-budget-usd` for verified Claude.ai subscription auth. Add `--max-budget-usd 2` for API, cloud-provider, or unknown authenticated modes, or when the user explicitly requests a subscription usage cap.
@@ -37,7 +46,9 @@ The resolved Claude Code CLI must support `--model fable`, `--fallback-model`, `
 
 ## Prompt contract
 
-Ask Claude to follow the `critique` discipline: steelman the spec, identify only evidence-backed blockers or important gaps, name real tradeoffs, map each accepted concern to an exact plan change and verification check, and return `solid`, `solid-with-caveats`, `needs-rework`, or `stop-and-rethink`.
+Ask Claude to follow the `critique` discipline: steelman the spec, identify only evidence-backed
+blockers or important gaps, name real tradeoffs, and map concerns to exact plan changes and checks.
+The runner returns `PASS|CHANGES_REQUIRED`; Codex maps that evidence into the critique disposition.
 
 Claude does not approve execution. Codex validates the critique, records accepted/rejected findings in `Critique disposition`, reruns affected risk/coverage checks, and requests human approval when the plan materially changes.
 

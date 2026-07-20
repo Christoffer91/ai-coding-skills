@@ -378,18 +378,23 @@
 
 <script>
 let RUNS=[], open={}, localAnswered={}, OFFLINE=false, DEMO=/[?&]demo\b/.test(location.search);
-function fmtTokens(n){n=Number(n);if(!isFinite(n)||n<=0)return"0";if(n>=1e6){const m=n/1e6;return (m>=10?Math.round(m):(m.toFixed(1).replace(/\.0$/,"")))+"M";}if(n>=1e3)return Math.round(n/1e3)+"K";return String(Math.round(n));}
+const I64=9223372036854775807n;
+const tokenInt=v=>{if(typeof v!=="string"&&typeof v!=="bigint"&&!Number.isSafeInteger(v))return null;const s=String(v);if(!/^(0|[1-9]\d*)$/.test(s))return null;try{const n=BigInt(s);return n<=I64?n:null;}catch{return null;}};
+function fmtTokens(value){const n=tokenInt(value);if(n===null||n===0n)return"0";if(n>=1000000n)return (n/1000000n).toString()+"M";if(n>=1000n)return (n/1000n).toString()+"K";return n.toString();}
 const kindOf=a=>/claude|opus|fable|sonnet/i.test(a||"")?"claude":/gpt|codex|sol|terra/i.test(a||"")?"codex":"neutral";
 const whoLabel=k=>k==="claude"?"Claude":k==="codex"?"Codex":"Driver";
 const safeUrl=u=>/^(https?:\/\/|#)/.test(u||"")?u:"#";
 const isAns=r=>r.answered||localAnswered[r.id];
 const ansChoice=r=>(r.answered&&r.answered.choice)||localAnswered[r.id];
 const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const stepTok=s=>{const t=s&&s.tokens;if(t==null)return 0;if(typeof t==="number")return t;
-  return (t.in||t.input||t.input_tokens||0)+(t.out||t.output||t.output_tokens||0);};
-const runTok=r=>(r.steps||[]).reduce((a,s)=>a+stepTok(s),0);
-const fmtTok=n=>!n?"":n>=1e6?(n/1e6).toFixed(1)+"M tok":n>=1000?Math.round(n/1000)+"k tok":n+" tok";
-const tokBit=s=>{const t=stepTok(s);return t?" · "+fmtTok(t):"";};
+const stepTok=s=>tokenInt(s&&s.tokens)||0n;
+const runTok=r=>(r.steps||[]).reduce((a,s)=>a+stepTok(s),0n);
+const tokenCoverage=r=>{const raw=String(((r.metrics||{})["tokens.coverage.calls.v1"]||""));const m=raw.match(/^(0|[1-9]\d*)\/(0|[1-9]\d*)$/);if(!m)return null;const observed=tokenInt(m[1]),started=tokenInt(m[2]);return observed!==null&&started!==null&&observed<=started?{observed,started}:null;};
+const tokenCoverageLabel=r=>{const c=tokenCoverage(r);return c?`${c.observed}/${c.started} model calls measured`:"coverage unknown";};
+const hasTok=value=>{const n=tokenInt(value);return n!==null&&n!==0n;};
+const fmtTok=n=>n===0n?"":fmtTokens(n)+" tok";
+const tokBit=s=>{const t=stepTok(s);return t!==0n?" · "+fmtTok(t):"";};
+const tokenFlex=(value,total)=>total===0n?.04:Math.max(Number((value*10000n)/total)/10000,.04);
 function ago(sec){const s=Math.max(0,Math.round(Date.now()/1000-sec));if(s<60)return s+"s ago";const m=Math.round(s/60);if(m<60)return m+"m ago";const h=Math.floor(m/60);return h+"h "+(m%60)+"m ago";}
 function dur(sec){const m=Math.max(0,Math.round((Date.now()/1000-sec)/60));if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
 function span(a,b){const s=Math.max(0,Math.round((b??Date.now()/1000)-a));if(s<60)return s+"s";const m=Math.round(s/60);if(m<60)return m+"m";const h=Math.floor(m/60);return h+"h "+(m%60)+"m";}
@@ -462,15 +467,15 @@ function timebar(r){
   const total=parts.reduce((a,p)=>a+p.sec,0);
   if(parts.length<2||total<60)return"";
   const segs=parts.map(p=>`<span class="b-${p.k} ${p.on?'b-on':''}" style="flex:${Math.max(p.sec/total,.04)}" title="${esc(p.name)} · ${span(0,p.sec)}"></span>`).join("");
-  const tparts=(r.steps||[]).map(s=>({k:kindOf(s.actor),tok:stepTok(s),on:s.state==="active",name:s.name})).filter(p=>p.tok>0);
-  const ttotal=tparts.reduce((a,p)=>a+p.tok,0);
-  const tokbar=tparts.length>=2?`<span class="lbl" style="margin-top:10px">tokens by step · ${fmtTok(ttotal)} total</span>
-    <div class="tbar">${tparts.map(p=>`<span class="b-${p.k} ${p.on?'b-on':''}" style="flex:${Math.max(p.tok/ttotal,.04)}" title="${esc(p.name)} · ${fmtTok(p.tok)}"></span>`).join("")}</div>`:"";
+  const tparts=(r.steps||[]).map(s=>({k:kindOf(s.actor),tok:stepTok(s),on:s.state==="active",name:s.name})).filter(p=>p.tok>0n);
+  const ttotal=tparts.reduce((a,p)=>a+p.tok,0n);
+  const tokbar=tparts.length>=2?`<span class="lbl" style="margin-top:10px">measured tokens by step · ${fmtTok(ttotal)} total</span>
+    <div class="tbar">${tparts.map(p=>`<span class="b-${p.k} ${p.on?'b-on':''}" style="flex:${tokenFlex(p.tok,ttotal)}" title="${esc(p.name)} · ${fmtTok(p.tok)}"></span>`).join("")}</div>`:"";
   const per=k=>parts.filter(p=>p.k===k).reduce((a,p)=>a+p.sec,0);
-  const perTok=k=>(r.steps||[]).filter(s=>kindOf(s.actor)===k).reduce((a,s)=>a+stepTok(s),0);
+  const perTok=k=>(r.steps||[]).filter(s=>kindOf(s.actor)===k).reduce((a,s)=>a+stepTok(s),0n);
   const leg=[["claude","Claude"],["codex","Codex"],["neutral","driver"]]
     .filter(([k])=>per(k)>0)
-    .map(([k,n])=>`<i><span class="sw b-${k}" style="background:var(--${k==='neutral'?'done':k})"></span>${n} ${span(0,per(k))}${perTok(k)?" · "+fmtTok(perTok(k)):""}</i>`).join("");
+    .map(([k,n])=>`<i><span class="sw b-${k}" style="background:var(--${k==='neutral'?'done':k})"></span>${n} ${span(0,per(k))}${perTok(k)!==0n?" · "+fmtTok(perTok(k)):""}</i>`).join("");
   return `<div class="tbar-wrap"><span class="lbl">time by step · ${span(0,total)} total</span>
     <div class="tbar">${segs}</div>${tokbar}<div class="tbar-legend">${leg}</div></div>`;
 }
@@ -536,8 +541,8 @@ function card(r,compact){
       <div><div class="lbl">elapsed</div><div class="v">${r.startedAt?dur(r.startedAt):"—"}</div></div>
       <div><div class="lbl">updated</div><div class="v small">${r.updatedAt?ago(r.updatedAt):"—"}</div></div>
       <div><div class="lbl">tests</div><div class="v small">${esc(m.tests||"—")}</div></div>
-      ${m["tokens.total"]?`<div><div class="lbl">tokens</div><div class="v small">${esc(fmtTokens(m["tokens.total"]))}</div></div>`:""}
-      ${runTok(r)?`<div><div class="lbl">tokens</div><div class="v small">${fmtTok(runTok(r))}</div></div>`:""}</div>
+      ${hasTok(m["tokens.total"])?`<div><div class="lbl">measured tokens</div><div class="v small">${esc(fmtTokens(m["tokens.total"]))} · ${esc(tokenCoverageLabel(r))}</div></div>`:""}
+      ${!hasTok(m["tokens.total"])&&runTok(r)!==0n?`<div><div class="lbl">measured tokens</div><div class="v small">${fmtTok(runTok(r))} · coverage unknown</div></div>`:""}</div>
     <div class="chips"><span class="chip exec">${esc(r.executor||"gpt-5.6-sol")}</span><span class="chip plan">plan: ${esc(r.planner||"Claude")}</span>
       ${(!["done","failed"].includes(st)&&r.hasConsole)?`<a class="pr" href="/console?id=${encodeURIComponent(r.id)}" title="Live console output for this run">console ↗</a>`:""}
       ${prBit(r)}</div>`;
@@ -615,8 +620,8 @@ function render(){
   if(cnt("quiet"))chips.push(`<span class="schip quiet"><span class="n">${cnt("quiet")}</span> quiet</span>`);
   if(cnt("incomplete"))chips.push(`<span class="schip stale"><span class="n">${cnt("incomplete")}</span> missing terminal emit</span>`);
   if(cnt("live"))chips.push(`<span class="schip liv"><span class="d"></span><span class="n">${cnt("live")}</span> live</span>`);
-  {const wk=Date.now()/1000-7*86400;const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(Number((r.metrics||{})["tokens.total"])||runTok(r)||0):0),0);
-  if(tok7d>0)chips.push(`<span class="schip" style="color:var(--faint)">≈${esc(fmtTokens(tok7d))} tokens · 7d</span>`);}
+  {const wk=Date.now()/1000-7*86400;const tok7d=RUNS.reduce((a,r)=>a+((r.startedAt&&r.startedAt>=wk)?(tokenInt((r.metrics||{})["tokens.total"])||runTok(r)):0n),0n);
+  if(tok7d>0n)chips.push(`<span class="schip" style="color:var(--faint)">≥${esc(fmtTokens(tok7d))} measured tokens · 7d</span>`);}
   if(cnt("handoff"))chips.push(`<span class="schip claude"><span class="n">${cnt("handoff")}</span> with claude</span>`);
   if(cnt("paused"))chips.push(`<span class="schip quiet"><span class="n">${cnt("paused")}</span> paused</span>`);
   if(cnt("rejected"))chips.push(`<span class="schip"><span class="n">${cnt("rejected")}</span> rejected</span>`);
